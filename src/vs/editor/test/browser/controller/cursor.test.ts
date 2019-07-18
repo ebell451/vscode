@@ -2052,7 +2052,7 @@ suite('Editor Controller - Regression tests', () => {
 			getInitialState: () => NULL_STATE,
 			tokenize: undefined!,
 			tokenize2: (line: string, state: IState): TokenizationResult2 => {
-				return new TokenizationResult2(null!, state);
+				return new TokenizationResult2(new Uint32Array(0), state);
 			}
 		};
 
@@ -2212,6 +2212,7 @@ suite('Editor Controller - Cursor Configuration', () => {
 			].join('\n'),
 			{
 				tabSize: 13,
+				indentSize: 13,
 			}
 		);
 
@@ -3122,7 +3123,10 @@ suite('Editor Controller - Indentation Rules', () => {
 				'}a}'
 			],
 			languageIdentifier: mode.getLanguageIdentifier(),
-			modelOpts: { tabSize: 2 }
+			modelOpts: {
+				tabSize: 2,
+				indentSize: 2
+			}
 		}, (model, cursor) => {
 			moveTo(cursor, 3, 3, false);
 			assertCursor(cursor, new Selection(3, 3, 3, 3));
@@ -3594,7 +3598,10 @@ suite('Editor Controller - Indentation Rules', () => {
 				'',
 				')',
 			].join('\n'),
-			{ tabSize: 2 },
+			{
+				tabSize: 2,
+				indentSize: 2
+			},
 			mode.getLanguageIdentifier()
 		);
 
