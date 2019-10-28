@@ -3,8 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { window, Terminal, TerminalVirtualProcess, EventEmitter, TerminalDimensions, workspace, ConfigurationTarget } from 'vscode';
-import { doesNotThrow, equal, ok } from 'assert';
+import { window, Pseudoterminal, EventEmitter, TerminalDimensions, workspace, ConfigurationTarget } from 'vscode';
+import { doesNotThrow, equal, ok, deepEqual } from 'assert';
 
 suite('window namespace tests', () => {
 	suiteSetup(async () => {
@@ -81,24 +81,6 @@ suite('window namespace tests', () => {
 			});
 			const terminal = window.createTerminal('b');
 		});
-
-		test('Terminal.sendText should fire Terminal.onInput', (done) => {
-			const reg1 = window.onDidOpenTerminal(terminal => {
-				reg1.dispose();
-				const reg2 = renderer.onDidAcceptInput(data => {
-					equal(data, 'bar');
-					reg2.dispose();
-					const reg3 = window.onDidCloseTerminal(() => {
-						reg3.dispose();
-						done();
-					});
-					terminal.dispose();
-				});
-				terminal.sendText('bar', false);
-			});
-			const renderer = window.createTerminalRenderer('foo');
-		});
-
 		// test('onDidChangeActiveTerminal should fire when new terminals are created', (done) => {
 		// 	const reg1 = window.onDidChangeActiveTerminal((active: Terminal | undefined) => {
 		// 		equal(active, terminal);
@@ -170,22 +152,6 @@ suite('window namespace tests', () => {
 		// });
 
 		suite('hideFromUser', () => {
-			// test('should fire onDidWriteData correctly', done => {
-			// 	const terminal = window.createTerminal({ name: 'bg', hideFromUser: true });
-			// 	let data = '';
-			// 	terminal.onDidWriteData(e => {
-			// 		data += e;
-			// 		if (data.indexOf('foo') !== -1) {
-			// 			const reg3 = window.onDidCloseTerminal(() => {
-			// 				reg3.dispose();
-			// 				done();
-			// 			});
-			// 			terminal.dispose();
-			// 		}
-			// 	});
-			// 	terminal.sendText('foo');
-			// });
-
 			test('should be available to terminals API', done => {
 				const terminal = window.createTerminal({ name: 'bg', hideFromUser: true });
 				window.onDidOpenTerminal(t => {
@@ -201,59 +167,88 @@ suite('window namespace tests', () => {
 			});
 		});
 
-		suite('Terminal renderers (deprecated)', () => {
-			test('should fire onDidOpenTerminal and onDidCloseTerminal from createTerminalRenderer terminal', (done) => {
-				const reg1 = window.onDidOpenTerminal(term => {
-					equal(term.name, 'c');
-					reg1.dispose();
-					const reg2 = window.onDidCloseTerminal(() => {
-						reg2.dispose();
-						done();
-					});
-					term.dispose();
-				});
-				window.createTerminalRenderer('c');
-			});
+		suite('window.onDidWriteTerminalData', () => {
+			test('should listen to all future terminal data events', (done) => {
+				const openEvents: string[] = [];
+				const dataEvents: { name: string, data: string }[] = [];
+				const closeEvents: string[] = [];
+				const reg1 = window.onDidOpenTerminal(e => openEvents.push(e.name));
 
-			test('should get maximum dimensions set when shown', (done) => {
-				let terminal: Terminal;
-				const reg1 = window.onDidOpenTerminal(term => {
-					reg1.dispose();
-					term.show();
-					terminal = term;
-				});
-				const renderer = window.createTerminalRenderer('foo');
-				const reg2 = renderer.onDidChangeMaximumDimensions(dimensions => {
-					ok(dimensions.columns > 0);
-					ok(dimensions.rows > 0);
-					reg2.dispose();
-					const reg3 = window.onDidCloseTerminal(() => {
-						reg3.dispose();
-						done();
-					});
-					terminal.dispose();
-				});
-			});
+				let resolveOnceDataWritten: (() => void) | undefined;
+				let resolveOnceClosed: (() => void) | undefined;
 
-			test('should fire Terminal.onData on write', (done) => {
-				const reg1 = window.onDidOpenTerminal(terminal => {
-					reg1.dispose();
-					const reg2 = terminal.onDidWriteData(data => {
-						equal(data, 'bar');
-						reg2.dispose();
-						const reg3 = window.onDidCloseTerminal(() => {
-							reg3.dispose();
-							done();
-						});
-						terminal.dispose();
-					});
-					renderer.write('bar');
+				const reg2 = window.onDidWriteTerminalData(e => {
+					dataEvents.push({ name: e.terminal.name, data: e.data });
+
+					resolveOnceDataWritten!();
 				});
-				const renderer = window.createTerminalRenderer('foo');
+
+				const reg3 = window.onDidCloseTerminal(e => {
+					closeEvents.push(e.name);
+
+					if (closeEvents.length === 1) {
+						deepEqual(openEvents, ['test1']);
+						deepEqual(dataEvents, [{ name: 'test1', data: 'write1' }]);
+						deepEqual(closeEvents, ['test1']);
+						resolveOnceClosed!();
+					} else if (closeEvents.length === 2) {
+						deepEqual(openEvents, ['test1', 'test2']);
+						deepEqual(dataEvents, [{ name: 'test1', data: 'write1' }, { name: 'test2', data: 'write2' }]);
+						deepEqual(closeEvents, ['test1', 'test2']);
+						resolveOnceClosed!();
+					}
+				});
+
+				const term1Write = new EventEmitter<string>();
+				const term1Close = new EventEmitter<void>();
+				window.createTerminal({
+					name: 'test1', pty: {
+						onDidWrite: term1Write.event,
+						onDidClose: term1Close.event,
+						open: async () => {
+							term1Write.fire('write1');
+
+							// Wait until the data is written
+							await new Promise(resolve => { resolveOnceDataWritten = resolve; });
+
+							term1Close.fire();
+
+							// Wait until the terminal is closed
+							await new Promise<void>(resolve => { resolveOnceClosed = resolve; });
+
+							const term2Write = new EventEmitter<string>();
+							const term2Close = new EventEmitter<void>();
+							window.createTerminal({
+								name: 'test2', pty: {
+									onDidWrite: term2Write.event,
+									onDidClose: term2Close.event,
+									open: async () => {
+										term2Write.fire('write2');
+
+										// Wait until the data is written
+										await new Promise<void>(resolve => { resolveOnceDataWritten = resolve; });
+
+										term2Close.fire();
+
+										// Wait until the terminal is closed
+										await new Promise<void>(resolve => { resolveOnceClosed = resolve; });
+
+										reg1.dispose();
+										reg2.dispose();
+										reg3.dispose();
+										done();
+									},
+									close: () => { }
+								}
+							});
+						},
+						close: () => { }
+					}
+				});
 			});
 		});
 
-		suite('Virtual process terminals', () => {
+		suite('Extension pty terminals', () => {
 			test('should fire onDidOpenTerminal and onDidCloseTerminal', (done) => {
 				const reg1 = window.onDidOpenTerminal(term => {
 					equal(term.name, 'c');
@@ -264,53 +259,60 @@ suite('window namespace tests', () => {
 					});
 					term.dispose();
 				});
-				const virtualProcess: TerminalVirtualProcess = {
-					onDidWrite: new EventEmitter<string>().event
-				};
-				window.createTerminal({ name: 'c', virtualProcess });
-			});
-
-			test('should fire Terminal.onData on write', (done) => {
-				const reg1 = window.onDidOpenTerminal(term => {
-					equal(terminal, term);
-					reg1.dispose();
-					const reg2 = terminal.onDidWriteData(data => {
-						equal(data, 'bar');
-						reg2.dispose();
-						const reg3 = window.onDidCloseTerminal(() => {
-							reg3.dispose();
-							done();
-						});
-						terminal.dispose();
-					});
-					writeEmitter.fire('bar');
-				});
-				const writeEmitter = new EventEmitter<string>();
-				const virtualProcess: TerminalVirtualProcess = {
-					onDidWrite: writeEmitter.event
-				};
-				const terminal = window.createTerminal({ name: 'foo', virtualProcess });
-			});
-
-			test('should fire provide dimensions on start as the terminal has been shown', (done) => {
-				const reg1 = window.onDidOpenTerminal(term => {
-					equal(terminal, term);
-					reg1.dispose();
-				});
-				const virtualProcess: TerminalVirtualProcess = {
+				const pty: Pseudoterminal = {
 					onDidWrite: new EventEmitter<string>().event,
-					start: (dimensions) => {
-						ok(dimensions!.columns > 0);
-						ok(dimensions!.rows > 0);
-						const reg3 = window.onDidCloseTerminal(() => {
-							reg3.dispose();
-							done();
-						});
-						terminal.dispose();
-					}
+					open: () => { },
+					close: () => { }
 				};
-				const terminal = window.createTerminal({ name: 'foo', virtualProcess });
+				window.createTerminal({ name: 'c', pty });
 			});
+
+			// The below tests depend on global UI state and each other
+			// test('should not provide dimensions on start as the terminal has not been shown yet', (done) => {
+			// 	const reg1 = window.onDidOpenTerminal(term => {
+			// 		equal(terminal, term);
+			// 		reg1.dispose();
+			// 	});
+			// 	const pty: Pseudoterminal = {
+			// 		onDidWrite: new EventEmitter<string>().event,
+			// 		open: (dimensions) => {
+			// 			equal(dimensions, undefined);
+			// 			const reg3 = window.onDidCloseTerminal(() => {
+			// 				reg3.dispose();
+			// 				done();
+			// 			});
+			// 			// Show a terminal and wait a brief period before dispose, this will cause
+			// 			// the panel to init it's dimenisons and be provided to following terminals.
+			// 			// The following test depends on this.
+			// 			terminal.show();
+			// 			setTimeout(() => terminal.dispose(), 200);
+			// 		},
+			// 		close: () => {}
+			// 	};
+			// 	const terminal = window.createTerminal({ name: 'foo', pty });
+			// });
+			// test('should provide dimensions on start as the terminal has been shown', (done) => {
+			// 	const reg1 = window.onDidOpenTerminal(term => {
+			// 		equal(terminal, term);
+			// 		reg1.dispose();
+			// 	});
+			// 	const pty: Pseudoterminal = {
+			// 		onDidWrite: new EventEmitter<string>().event,
+			// 		open: (dimensions) => {
+			// 			// This test depends on Terminal.show being called some time before such
+			// 			// that the panel dimensions are initialized and cached.
+			// 			ok(dimensions!.columns > 0);
+			// 			ok(dimensions!.rows > 0);
+			// 			const reg3 = window.onDidCloseTerminal(() => {
+			// 				reg3.dispose();
+			// 				done();
+			// 			});
+			// 			terminal.dispose();
+			// 		},
+			// 		close: () => {}
+			// 	};
+			// 	const terminal = window.createTerminal({ name: 'foo', pty });
+			// });
 
 			test('should respect dimension overrides', (done) => {
 				const reg1 = window.onDidOpenTerminal(term => {
@@ -328,15 +330,18 @@ suite('window namespace tests', () => {
 						});
 						terminal.dispose();
 					});
-					overrideDimensionsEmitter.fire({ columns: 10, rows: 5 });
 				});
 				const writeEmitter = new EventEmitter<string>();
 				const overrideDimensionsEmitter = new EventEmitter<TerminalDimensions>();
-				const virtualProcess: TerminalVirtualProcess = {
+				const pty: Pseudoterminal = {
 					onDidWrite: writeEmitter.event,
-					onDidOverrideDimensions: overrideDimensionsEmitter.event
+					onDidOverrideDimensions: overrideDimensionsEmitter.event,
+					open: () => {
+						overrideDimensionsEmitter.fire({ columns: 10, rows: 5 });
+					},
+					close: () => { }
 				};
-				const terminal = window.createTerminal({ name: 'foo', virtualProcess });
+				const terminal = window.createTerminal({ name: 'foo', pty });
 			});
 		});
 	});

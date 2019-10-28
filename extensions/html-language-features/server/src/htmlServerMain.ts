@@ -49,7 +49,7 @@ let workspaceFolders: WorkspaceFolder[] = [];
 let languageModes: LanguageModes;
 
 let clientSnippetSupport = false;
-let clientDynamicRegisterSupport = false;
+let dynamicFormatterRegistration = false;
 let scopedSettingsSupport = false;
 let workspaceFoldersSupport = false;
 let foldingRangeLimit = Number.MAX_VALUE;
@@ -96,7 +96,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
 		get folders() { return workspaceFolders; }
 	};
 
-	languageModes = getLanguageModes(initializationOptions ? initializationOptions.embeddedLanguages : { css: true, javascript: true }, workspace, providers);
+	languageModes = getLanguageModes(initializationOptions ? initializationOptions.embeddedLanguages : { css: true, javascript: true }, workspace, params.capabilities, providers);
 
 	documents.onDidClose(e => {
 		languageModes.onDocumentRemoved(e.document);
@@ -118,7 +118,7 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
 	}
 
 	clientSnippetSupport = getClientCapability('textDocument.completion.completionItem.snippetSupport', false);
-	clientDynamicRegisterSupport = getClientCapability('workspace.symbol.dynamicRegistration', false);
+	dynamicFormatterRegistration = getClientCapability('textDocument.rangeFormatting.dynamicRegistration', false) && (typeof params.initializationOptions.provideFormatter !== 'boolean');
 	scopedSettingsSupport = getClientCapability('workspace.configuration', false);
 	workspaceFoldersSupport = getClientCapability('workspace.workspaceFolders', false);
 	foldingRangeLimit = getClientCapability('textDocument.foldingRange.rangeLimit', Number.MAX_VALUE);
@@ -128,14 +128,15 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
 		completionProvider: clientSnippetSupport ? { resolveProvider: true, triggerCharacters: ['.', ':', '<', '"', '=', '/'] } : undefined,
 		hoverProvider: true,
 		documentHighlightProvider: true,
-		documentRangeFormattingProvider: false,
+		documentRangeFormattingProvider: params.initializationOptions.provideFormatter === true,
 		documentLinkProvider: { resolveProvider: false },
 		documentSymbolProvider: true,
 		definitionProvider: true,
 		signatureHelpProvider: { triggerCharacters: ['('] },
 		referencesProvider: true,
 		colorProvider: {},
-		foldingRangeProvider: true
+		foldingRangeProvider: true,
+		selectionRangeProvider: true,
 	};
 	return { capabilities };
 });
@@ -170,7 +171,7 @@ connection.onDidChangeConfiguration((change) => {
 	documents.all().forEach(triggerValidation);
 
 	// dynamically enable & disable the formatter
-	if (clientDynamicRegisterSupport) {
+	if (dynamicFormatterRegistration) {
 		const enableFormatter = globalSettings && globalSettings.html && globalSettings.html.format && globalSettings.html.format.enable;
 		if (enableFormatter) {
 			if (!formatterRegistration) {
