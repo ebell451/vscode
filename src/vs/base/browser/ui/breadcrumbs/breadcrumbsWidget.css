@@ -24,6 +24,13 @@
 	height: 100%;
 	outline: none;
 }
+.monaco-breadcrumbs.disabled .monaco-breadcrumb-item {
+	cursor: default;
+}
+
+.monaco-breadcrumbs .monaco-breadcrumb-item .codicon-breadcrumb-separator {
+	color: inherit;
+}
 
 .monaco-breadcrumbs .monaco-breadcrumb-item:first-of-type::before {
 	content: ' ';

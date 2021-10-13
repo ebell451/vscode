@@ -34,6 +34,9 @@ export function getSimpleEditorOptions(): IEditorOptions {
 		acceptSuggestionOnEnter: 'smart',
 		minimap: {
 			enabled: false
+		},
+		guides: {
+			indentation: false
 		}
 	};
 }

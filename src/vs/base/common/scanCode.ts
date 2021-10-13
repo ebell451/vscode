@@ -3,12 +3,13 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { KeyCode } from 'vs/base/common/keyCodes';
+import { IBaseKeybinding, KeyCode } from 'vs/base/common/keyCodes';
 
 /**
  * keyboardEvent.code
  */
 export const enum ScanCode {
+	DependsOnKbLayout = -1,
 	None,
 
 	Hyper,
@@ -227,7 +228,7 @@ export const IMMUTABLE_CODE_TO_KEY_CODE: KeyCode[] = [];
  */
 export const IMMUTABLE_KEY_CODE_TO_CODE: ScanCode[] = [];
 
-export class ScanCodeBinding {
+export class ScanCodeBinding implements IBaseKeybinding {
 	public readonly ctrlKey: boolean;
 	public readonly shiftKey: boolean;
 	public readonly altKey: boolean;
@@ -468,11 +469,11 @@ export class ScanCodeBinding {
 
 (function () {
 	for (let i = 0; i <= ScanCode.MAX_VALUE; i++) {
-		IMMUTABLE_CODE_TO_KEY_CODE[i] = -1;
+		IMMUTABLE_CODE_TO_KEY_CODE[i] = KeyCode.DependsOnKbLayout;
 	}
 
 	for (let i = 0; i <= KeyCode.MAX_VALUE; i++) {
-		IMMUTABLE_KEY_CODE_TO_CODE[i] = -1;
+		IMMUTABLE_KEY_CODE_TO_CODE[i] = ScanCode.DependsOnKbLayout;
 	}
 
 	function define(code: ScanCode, keyCode: KeyCode): void {

@@ -9,15 +9,15 @@ import { IJSONSchema } from 'vs/base/common/jsonSchema';
 import * as types from 'vs/base/common/types';
 import { URI } from 'vs/base/common/uri';
 import { LanguageIdentifier } from 'vs/editor/common/modes';
-import { CharacterPair, CommentRule, FoldingRules, IAutoClosingPair, IAutoClosingPairConditional, IndentationRule, LanguageConfiguration } from 'vs/editor/common/modes/languageConfiguration';
+import { CharacterPair, CommentRule, EnterAction, ExplicitLanguageConfiguration, FoldingRules, IAutoClosingPair, IAutoClosingPairConditional, IndentAction, IndentationRule, OnEnterRule } from 'vs/editor/common/modes/languageConfiguration';
 import { LanguageConfigurationRegistry } from 'vs/editor/common/modes/languageConfigurationRegistry';
 import { IModeService } from 'vs/editor/common/services/modeService';
-import { IFileService } from 'vs/platform/files/common/files';
 import { Extensions, IJSONContributionRegistry } from 'vs/platform/jsonschemas/common/jsonContributionRegistry';
 import { Registry } from 'vs/platform/registry/common/platform';
 import { IExtensionService } from 'vs/workbench/services/extensions/common/extensions';
 import { ITextMateService } from 'vs/workbench/services/textMate/common/textMateService';
 import { getParseErrorMessage } from 'vs/base/common/jsonErrorMessages';
+import { IExtensionResourceLoaderService } from 'vs/workbench/services/extensionResourceLoader/common/extensionResourceLoader';
 
 interface IRegExp {
 	pattern: string;
@@ -31,15 +31,30 @@ interface IIndentationRules {
 	unIndentedLinePattern?: string | IRegExp;
 }
 
+interface IEnterAction {
+	indent: 'none' | 'indent' | 'indentOutdent' | 'outdent';
+	appendText?: string;
+	removeText?: number;
+}
+
+interface IOnEnterRule {
+	beforeText: string | IRegExp;
+	afterText?: string | IRegExp;
+	previousLineText?: string | IRegExp;
+	action: IEnterAction;
+}
+
 interface ILanguageConfiguration {
 	comments?: CommentRule;
 	brackets?: CharacterPair[];
 	autoClosingPairs?: Array<CharacterPair | IAutoClosingPairConditional>;
 	surroundingPairs?: Array<CharacterPair | IAutoClosingPair>;
+	colorizedBracketPairs?: Array<CharacterPair>;
 	wordPattern?: string | IRegExp;
 	indentationRules?: IIndentationRules;
 	folding?: FoldingRules;
 	autoCloseBefore?: string;
+	onEnterRules?: IOnEnterRule[];
 }
 
 function isStringArr(something: string[] | null): something is string[] {
@@ -69,14 +84,13 @@ export class LanguageConfigurationFileHandler {
 	constructor(
 		@ITextMateService textMateService: ITextMateService,
 		@IModeService private readonly _modeService: IModeService,
-		@IFileService private readonly _fileService: IFileService,
+		@IExtensionResourceLoaderService private readonly _extensionResourceLoaderService: IExtensionResourceLoaderService,
 		@IExtensionService private readonly _extensionService: IExtensionService
 	) {
 		this._done = [];
 
 		// Listen for hints that a language configuration is needed/usefull and then load it once
-		this._modeService.onDidCreateMode((mode) => {
-			const languageIdentifier = mode.getLanguageIdentifier();
+		this._modeService.onDidEncounterLanguage((languageIdentifier) => {
 			// Modes can be instantiated before the extension points have finished registering
 			this._extensionService.whenInstalledExtensionsRegistered().then(() => {
 				this._loadConfigurationsForMode(languageIdentifier);
@@ -93,14 +107,14 @@ export class LanguageConfigurationFileHandler {
 		}
 		this._done[languageIdentifier.id] = true;
 
-		let configurationFiles = this._modeService.getConfigurationFiles(languageIdentifier.language);
+		const configurationFiles = this._modeService.getConfigurationFiles(languageIdentifier.language);
 		configurationFiles.forEach((configFileLocation) => this._handleConfigFile(languageIdentifier, configFileLocation));
 	}
 
 	private _handleConfigFile(languageIdentifier: LanguageIdentifier, configFileLocation: URI): void {
-		this._fileService.readFile(configFileLocation).then((contents) => {
+		this._extensionResourceLoaderService.readExtensionResource(configFileLocation).then((contents) => {
 			const errors: ParseError[] = [];
-			let configuration = <ILanguageConfiguration>parse(contents.value.toString(), errors);
+			let configuration = <ILanguageConfiguration>parse(contents, errors);
 			if (errors.length) {
 				console.error(nls.localize('parseErrors', "Errors parsing {0}: {1}", configFileLocation.toString(), errors.map(e => (`[${e.offset}, ${e.length}] ${getParseErrorMessage(e.error)}`)).join('\n')));
 			}
@@ -114,17 +128,17 @@ export class LanguageConfigurationFileHandler {
 		});
 	}
 
-	private _extractValidCommentRule(languageIdentifier: LanguageIdentifier, configuration: ILanguageConfiguration): CommentRule | null {
+	private _extractValidCommentRule(languageIdentifier: LanguageIdentifier, configuration: ILanguageConfiguration): CommentRule | undefined {
 		const source = configuration.comments;
 		if (typeof source === 'undefined') {
-			return null;
+			return undefined;
 		}
 		if (!types.isObject(source)) {
 			console.warn(`[${languageIdentifier.language}]: language configuration: expected \`comments\` to be an object.`);
-			return null;
+			return undefined;
 		}
 
-		let result: CommentRule | null = null;
+		let result: CommentRule | undefined = undefined;
 		if (typeof source.lineComment !== 'undefined') {
 			if (typeof source.lineComment !== 'string') {
 				console.warn(`[${languageIdentifier.language}]: language configuration: expected \`comments.lineComment\` to be a string.`);
@@ -144,17 +158,17 @@ export class LanguageConfigurationFileHandler {
 		return result;
 	}
 
-	private _extractValidBrackets(languageIdentifier: LanguageIdentifier, configuration: ILanguageConfiguration): CharacterPair[] | null {
+	private _extractValidBrackets(languageIdentifier: LanguageIdentifier, configuration: ILanguageConfiguration): CharacterPair[] | undefined {
 		const source = configuration.brackets;
 		if (typeof source === 'undefined') {
-			return null;
+			return undefined;
 		}
 		if (!Array.isArray(source)) {
 			console.warn(`[${languageIdentifier.language}]: language configuration: expected \`brackets\` to be an array.`);
-			return null;
+			return undefined;
 		}
 
-		let result: CharacterPair[] | null = null;
+		let result: CharacterPair[] | undefined = undefined;
 		for (let i = 0, len = source.length; i < len; i++) {
 			const pair = source[i];
 			if (!isCharacterPair(pair)) {
@@ -168,17 +182,17 @@ export class LanguageConfigurationFileHandler {
 		return result;
 	}
 
-	private _extractValidAutoClosingPairs(languageIdentifier: LanguageIdentifier, configuration: ILanguageConfiguration): IAutoClosingPairConditional[] | null {
+	private _extractValidAutoClosingPairs(languageIdentifier: LanguageIdentifier, configuration: ILanguageConfiguration): IAutoClosingPairConditional[] | undefined {
 		const source = configuration.autoClosingPairs;
 		if (typeof source === 'undefined') {
-			return null;
+			return undefined;
 		}
 		if (!Array.isArray(source)) {
 			console.warn(`[${languageIdentifier.language}]: language configuration: expected \`autoClosingPairs\` to be an array.`);
-			return null;
+			return undefined;
 		}
 
-		let result: IAutoClosingPairConditional[] | null = null;
+		let result: IAutoClosingPairConditional[] | undefined = undefined;
 		for (let i = 0, len = source.length; i < len; i++) {
 			const pair = source[i];
 			if (Array.isArray(pair)) {
@@ -214,17 +228,17 @@ export class LanguageConfigurationFileHandler {
 		return result;
 	}
 
-	private _extractValidSurroundingPairs(languageIdentifier: LanguageIdentifier, configuration: ILanguageConfiguration): IAutoClosingPair[] | null {
+	private _extractValidSurroundingPairs(languageIdentifier: LanguageIdentifier, configuration: ILanguageConfiguration): IAutoClosingPair[] | undefined {
 		const source = configuration.surroundingPairs;
 		if (typeof source === 'undefined') {
-			return null;
+			return undefined;
 		}
 		if (!Array.isArray(source)) {
 			console.warn(`[${languageIdentifier.language}]: language configuration: expected \`surroundingPairs\` to be an array.`);
-			return null;
+			return undefined;
 		}
 
-		let result: IAutoClosingPair[] | null = null;
+		let result: IAutoClosingPair[] | undefined = undefined;
 		for (let i = 0, len = source.length; i < len; i++) {
 			const pair = source[i];
 			if (Array.isArray(pair)) {
@@ -254,109 +268,191 @@ export class LanguageConfigurationFileHandler {
 		return result;
 	}
 
-	// private _mapCharacterPairs(pairs: Array<CharacterPair | IAutoClosingPairConditional>): IAutoClosingPairConditional[] {
-	// 	return pairs.map(pair => {
-	// 		if (Array.isArray(pair)) {
-	// 			return { open: pair[0], close: pair[1] };
-	// 		}
-	// 		return <IAutoClosingPairConditional>pair;
-	// 	});
-	// }
+	private _extractValidColorizedBracketPairs(languageIdentifier: LanguageIdentifier, configuration: ILanguageConfiguration): CharacterPair[] | undefined {
+		const source = configuration.colorizedBracketPairs;
+		if (typeof source === 'undefined') {
+			return undefined;
+		}
+		if (!Array.isArray(source)) {
+			console.warn(`[${languageIdentifier.language}]: language configuration: expected \`colorizedBracketPairs\` to be an array.`);
+			return undefined;
+		}
+
+		const result: CharacterPair[] = [];
+		for (let i = 0, len = source.length; i < len; i++) {
+			const pair = source[i];
+			if (!isCharacterPair(pair)) {
+				console.warn(`[${languageIdentifier.language}]: language configuration: expected \`colorizedBracketPairs[${i}]\` to be an array of two strings.`);
+				continue;
+			}
+			result.push([pair[0], pair[1]]);
+
+		}
+		return result;
+	}
+
+	private _extractValidOnEnterRules(languageIdentifier: LanguageIdentifier, configuration: ILanguageConfiguration): OnEnterRule[] | undefined {
+		const source = configuration.onEnterRules;
+		if (typeof source === 'undefined') {
+			return undefined;
+		}
+		if (!Array.isArray(source)) {
+			console.warn(`[${languageIdentifier.language}]: language configuration: expected \`onEnterRules\` to be an array.`);
+			return undefined;
+		}
+
+		let result: OnEnterRule[] | undefined = undefined;
+		for (let i = 0, len = source.length; i < len; i++) {
+			const onEnterRule = source[i];
+			if (!types.isObject(onEnterRule)) {
+				console.warn(`[${languageIdentifier.language}]: language configuration: expected \`onEnterRules[${i}]\` to be an object.`);
+				continue;
+			}
+			if (!types.isObject(onEnterRule.action)) {
+				console.warn(`[${languageIdentifier.language}]: language configuration: expected \`onEnterRules[${i}].action\` to be an object.`);
+				continue;
+			}
+			let indentAction: IndentAction;
+			if (onEnterRule.action.indent === 'none') {
+				indentAction = IndentAction.None;
+			} else if (onEnterRule.action.indent === 'indent') {
+				indentAction = IndentAction.Indent;
+			} else if (onEnterRule.action.indent === 'indentOutdent') {
+				indentAction = IndentAction.IndentOutdent;
+			} else if (onEnterRule.action.indent === 'outdent') {
+				indentAction = IndentAction.Outdent;
+			} else {
+				console.warn(`[${languageIdentifier.language}]: language configuration: expected \`onEnterRules[${i}].action.indent\` to be 'none', 'indent', 'indentOutdent' or 'outdent'.`);
+				continue;
+			}
+			const action: EnterAction = { indentAction };
+			if (onEnterRule.action.appendText) {
+				if (typeof onEnterRule.action.appendText === 'string') {
+					action.appendText = onEnterRule.action.appendText;
+				} else {
+					console.warn(`[${languageIdentifier.language}]: language configuration: expected \`onEnterRules[${i}].action.appendText\` to be undefined or a string.`);
+				}
+			}
+			if (onEnterRule.action.removeText) {
+				if (typeof onEnterRule.action.removeText === 'number') {
+					action.removeText = onEnterRule.action.removeText;
+				} else {
+					console.warn(`[${languageIdentifier.language}]: language configuration: expected \`onEnterRules[${i}].action.removeText\` to be undefined or a number.`);
+				}
+			}
+			const beforeText = this._parseRegex(languageIdentifier, `onEnterRules[${i}].beforeText`, onEnterRule.beforeText);
+			if (!beforeText) {
+				continue;
+			}
+			const resultingOnEnterRule: OnEnterRule = { beforeText, action };
+			if (onEnterRule.afterText) {
+				const afterText = this._parseRegex(languageIdentifier, `onEnterRules[${i}].afterText`, onEnterRule.afterText);
+				if (afterText) {
+					resultingOnEnterRule.afterText = afterText;
+				}
+			}
+			if (onEnterRule.previousLineText) {
+				const previousLineText = this._parseRegex(languageIdentifier, `onEnterRules[${i}].previousLineText`, onEnterRule.previousLineText);
+				if (previousLineText) {
+					resultingOnEnterRule.previousLineText = previousLineText;
+				}
+			}
+			result = result || [];
+			result.push(resultingOnEnterRule);
+		}
+
+		return result;
+	}
 
 	private _handleConfig(languageIdentifier: LanguageIdentifier, configuration: ILanguageConfiguration): void {
 
-		let richEditConfig: LanguageConfiguration = {};
-
 		const comments = this._extractValidCommentRule(languageIdentifier, configuration);
-		if (comments) {
-			richEditConfig.comments = comments;
-		}
-
 		const brackets = this._extractValidBrackets(languageIdentifier, configuration);
-		if (brackets) {
-			richEditConfig.brackets = brackets;
-		}
-
 		const autoClosingPairs = this._extractValidAutoClosingPairs(languageIdentifier, configuration);
-		if (autoClosingPairs) {
-			richEditConfig.autoClosingPairs = autoClosingPairs;
-		}
-
 		const surroundingPairs = this._extractValidSurroundingPairs(languageIdentifier, configuration);
-		if (surroundingPairs) {
-			richEditConfig.surroundingPairs = surroundingPairs;
-		}
-
-		const autoCloseBefore = configuration.autoCloseBefore;
-		if (typeof autoCloseBefore === 'string') {
-			richEditConfig.autoCloseBefore = autoCloseBefore;
-		}
-
-		if (configuration.wordPattern) {
-			try {
-				let wordPattern = this._parseRegex(configuration.wordPattern);
-				if (wordPattern) {
-					richEditConfig.wordPattern = wordPattern;
-				}
-			} catch (error) {
-				// Malformed regexes are ignored
-			}
-		}
-
-		if (configuration.indentationRules) {
-			let indentationRules = this._mapIndentationRules(configuration.indentationRules);
-			if (indentationRules) {
-				richEditConfig.indentationRules = indentationRules;
-			}
-		}
-
+		const colorizedBracketPairs = this._extractValidColorizedBracketPairs(languageIdentifier, configuration);
+		const autoCloseBefore = (typeof configuration.autoCloseBefore === 'string' ? configuration.autoCloseBefore : undefined);
+		const wordPattern = (configuration.wordPattern ? this._parseRegex(languageIdentifier, `wordPattern`, configuration.wordPattern) : undefined);
+		const indentationRules = (configuration.indentationRules ? this._mapIndentationRules(languageIdentifier, configuration.indentationRules) : undefined);
+		let folding: FoldingRules | undefined = undefined;
 		if (configuration.folding) {
-			let markers = configuration.folding.markers;
-
-			richEditConfig.folding = {
+			const markers = configuration.folding.markers;
+			folding = {
 				offSide: configuration.folding.offSide,
 				markers: markers ? { start: new RegExp(markers.start), end: new RegExp(markers.end) } : undefined
 			};
 		}
+		const onEnterRules = this._extractValidOnEnterRules(languageIdentifier, configuration);
 
-		LanguageConfigurationRegistry.register(languageIdentifier, richEditConfig);
+		const richEditConfig: ExplicitLanguageConfiguration = {
+			comments,
+			brackets,
+			wordPattern,
+			indentationRules,
+			onEnterRules,
+			autoClosingPairs,
+			surroundingPairs,
+			colorizedBracketPairs,
+			autoCloseBefore,
+			folding,
+			__electricCharacterSupport: undefined,
+		};
+
+		LanguageConfigurationRegistry.register(languageIdentifier, richEditConfig, 50);
 	}
 
-	private _parseRegex(value: string | IRegExp) {
+	private _parseRegex(languageIdentifier: LanguageIdentifier, confPath: string, value: string | IRegExp): RegExp | undefined {
 		if (typeof value === 'string') {
-			return new RegExp(value, '');
-		} else if (typeof value === 'object') {
-			return new RegExp(value.pattern, value.flags);
+			try {
+				return new RegExp(value, '');
+			} catch (err) {
+				console.warn(`[${languageIdentifier.language}]: Invalid regular expression in \`${confPath}\`: `, err);
+				return undefined;
+			}
 		}
-
-		return null;
+		if (types.isObject(value)) {
+			if (typeof value.pattern !== 'string') {
+				console.warn(`[${languageIdentifier.language}]: language configuration: expected \`${confPath}.pattern\` to be a string.`);
+				return undefined;
+			}
+			if (typeof value.flags !== 'undefined' && typeof value.flags !== 'string') {
+				console.warn(`[${languageIdentifier.language}]: language configuration: expected \`${confPath}.flags\` to be a string.`);
+				return undefined;
+			}
+			try {
+				return new RegExp(value.pattern, value.flags);
+			} catch (err) {
+				console.warn(`[${languageIdentifier.language}]: Invalid regular expression in \`${confPath}\`: `, err);
+				return undefined;
+			}
+		}
+		console.warn(`[${languageIdentifier.language}]: language configuration: expected \`${confPath}\` to be a string or an object.`);
+		return undefined;
 	}
 
-	private _mapIndentationRules(indentationRules: IIndentationRules): IndentationRule | null {
-		try {
-			let increaseIndentPattern = this._parseRegex(indentationRules.increaseIndentPattern);
-			let decreaseIndentPattern = this._parseRegex(indentationRules.decreaseIndentPattern);
-
-			if (increaseIndentPattern && decreaseIndentPattern) {
-				let result: IndentationRule = {
-					increaseIndentPattern: increaseIndentPattern,
-					decreaseIndentPattern: decreaseIndentPattern
-				};
-
-				if (indentationRules.indentNextLinePattern) {
-					result.indentNextLinePattern = this._parseRegex(indentationRules.indentNextLinePattern);
-				}
-				if (indentationRules.unIndentedLinePattern) {
-					result.unIndentedLinePattern = this._parseRegex(indentationRules.unIndentedLinePattern);
-				}
-
-				return result;
-			}
-		} catch (error) {
-			// Malformed regexes are ignored
+	private _mapIndentationRules(languageIdentifier: LanguageIdentifier, indentationRules: IIndentationRules): IndentationRule | undefined {
+		const increaseIndentPattern = this._parseRegex(languageIdentifier, `indentationRules.increaseIndentPattern`, indentationRules.increaseIndentPattern);
+		if (!increaseIndentPattern) {
+			return undefined;
+		}
+		const decreaseIndentPattern = this._parseRegex(languageIdentifier, `indentationRules.decreaseIndentPattern`, indentationRules.decreaseIndentPattern);
+		if (!decreaseIndentPattern) {
+			return undefined;
 		}
 
-		return null;
+		const result: IndentationRule = {
+			increaseIndentPattern: increaseIndentPattern,
+			decreaseIndentPattern: decreaseIndentPattern
+		};
+
+		if (indentationRules.indentNextLinePattern) {
+			result.indentNextLinePattern = this._parseRegex(languageIdentifier, `indentationRules.indentNextLinePattern`, indentationRules.indentNextLinePattern);
+		}
+		if (indentationRules.unIndentedLinePattern) {
+			result.unIndentedLinePattern = this._parseRegex(languageIdentifier, `indentationRules.unIndentedLinePattern`, indentationRules.unIndentedLinePattern);
+		}
+
+		return result;
 	}
 }
 
@@ -420,6 +516,14 @@ const schema: IJSONSchema = {
 		brackets: {
 			default: [['(', ')'], ['[', ']'], ['{', '}']],
 			description: nls.localize('schema.brackets', 'Defines the bracket symbols that increase or decrease the indentation.'),
+			type: 'array',
+			items: {
+				$ref: '#definitions/bracketPair'
+			}
+		},
+		colorizedBracketPairs: {
+			default: [['(', ')'], ['[', ']'], ['{', '}']],
+			description: nls.localize('schema.colorizedBracketPairs', 'Defines the bracket pairs that are colorized by their nesting level if bracket pair colorization is enabled.'),
 			type: 'array',
 			items: {
 				$ref: '#definitions/bracketPair'
@@ -598,6 +702,101 @@ const schema: IJSONSchema = {
 							type: 'string',
 							description: nls.localize('schema.folding.markers.end', 'The RegExp pattern for the end marker. The regexp must start with \'^\'.')
 						},
+					}
+				}
+			}
+		},
+		onEnterRules: {
+			type: 'array',
+			description: nls.localize('schema.onEnterRules', 'The language\'s rules to be evaluated when pressing Enter.'),
+			items: {
+				type: 'object',
+				description: nls.localize('schema.onEnterRules', 'The language\'s rules to be evaluated when pressing Enter.'),
+				required: ['beforeText', 'action'],
+				properties: {
+					beforeText: {
+						type: ['string', 'object'],
+						description: nls.localize('schema.onEnterRules.beforeText', 'This rule will only execute if the text before the cursor matches this regular expression.'),
+						properties: {
+							pattern: {
+								type: 'string',
+								description: nls.localize('schema.onEnterRules.beforeText.pattern', 'The RegExp pattern for beforeText.'),
+								default: '',
+							},
+							flags: {
+								type: 'string',
+								description: nls.localize('schema.onEnterRules.beforeText.flags', 'The RegExp flags for beforeText.'),
+								default: '',
+								pattern: '^([gimuy]+)$',
+								patternErrorMessage: nls.localize('schema.onEnterRules.beforeText.errorMessage', 'Must match the pattern `/^([gimuy]+)$/`.')
+							}
+						}
+					},
+					afterText: {
+						type: ['string', 'object'],
+						description: nls.localize('schema.onEnterRules.afterText', 'This rule will only execute if the text after the cursor matches this regular expression.'),
+						properties: {
+							pattern: {
+								type: 'string',
+								description: nls.localize('schema.onEnterRules.afterText.pattern', 'The RegExp pattern for afterText.'),
+								default: '',
+							},
+							flags: {
+								type: 'string',
+								description: nls.localize('schema.onEnterRules.afterText.flags', 'The RegExp flags for afterText.'),
+								default: '',
+								pattern: '^([gimuy]+)$',
+								patternErrorMessage: nls.localize('schema.onEnterRules.afterText.errorMessage', 'Must match the pattern `/^([gimuy]+)$/`.')
+							}
+						}
+					},
+					previousLineText: {
+						type: ['string', 'object'],
+						description: nls.localize('schema.onEnterRules.previousLineText', 'This rule will only execute if the text above the line matches this regular expression.'),
+						properties: {
+							pattern: {
+								type: 'string',
+								description: nls.localize('schema.onEnterRules.previousLineText.pattern', 'The RegExp pattern for previousLineText.'),
+								default: '',
+							},
+							flags: {
+								type: 'string',
+								description: nls.localize('schema.onEnterRules.previousLineText.flags', 'The RegExp flags for previousLineText.'),
+								default: '',
+								pattern: '^([gimuy]+)$',
+								patternErrorMessage: nls.localize('schema.onEnterRules.previousLineText.errorMessage', 'Must match the pattern `/^([gimuy]+)$/`.')
+							}
+						}
+					},
+					action: {
+						type: ['string', 'object'],
+						description: nls.localize('schema.onEnterRules.action', 'The action to execute.'),
+						required: ['indent'],
+						default: { 'indent': 'indent' },
+						properties: {
+							indent: {
+								type: 'string',
+								description: nls.localize('schema.onEnterRules.action.indent', "Describe what to do with the indentation"),
+								default: 'indent',
+								enum: ['none', 'indent', 'indentOutdent', 'outdent'],
+								markdownEnumDescriptions: [
+									nls.localize('schema.onEnterRules.action.indent.none', "Insert new line and copy the previous line's indentation."),
+									nls.localize('schema.onEnterRules.action.indent.indent', "Insert new line and indent once (relative to the previous line's indentation)."),
+									nls.localize('schema.onEnterRules.action.indent.indentOutdent', "Insert two new lines:\n - the first one indented which will hold the cursor\n - the second one at the same indentation level"),
+									nls.localize('schema.onEnterRules.action.indent.outdent', "Insert new line and outdent once (relative to the previous line's indentation).")
+								]
+							},
+							appendText: {
+								type: 'string',
+								description: nls.localize('schema.onEnterRules.action.appendText', 'Describes text to be appended after the new line and after the indentation.'),
+								default: '',
+							},
+							removeText: {
+								type: 'number',
+								description: nls.localize('schema.onEnterRules.action.removeText', 'Describes the number of characters to remove from the new line\'s indentation.'),
+								default: 0,
+							}
+						}
 					}
 				}
 			}

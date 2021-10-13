@@ -3,8 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { OperatingSystem } from 'vs/base/common/platform';
 import { illegalArgument } from 'vs/base/common/errors';
+import { OperatingSystem } from 'vs/base/common/platform';
 
 /**
  * Virtual Key Codes, the value does not hold any inherent meaning.
@@ -12,6 +12,8 @@ import { illegalArgument } from 'vs/base/common/errors';
  * But these are "more general", as they should work across browsers & OS`s.
  */
 export const enum KeyCode {
+	DependsOnKbLayout = -1,
+
 	/**
 	 * Placed first to cover the 0 value of the enum.
 	 */
@@ -376,6 +378,33 @@ export namespace KeyCodeUtils {
 	export function fromUserSettings(key: string): KeyCode {
 		return userSettingsUSMap.strToKeyCode(key) || userSettingsGeneralMap.strToKeyCode(key);
 	}
+
+	export function toElectronAccelerator(keyCode: KeyCode): string | null {
+		if (keyCode >= KeyCode.NUMPAD_0 && keyCode <= KeyCode.NUMPAD_DIVIDE) {
+			// [Electron Accelerators] Electron is able to parse numpad keys, but unfortunately it
+			// renders them just as regular keys in menus. For example, num0 is rendered as "0",
+			// numdiv is rendered as "/", numsub is rendered as "-".
+			//
+			// This can lead to incredible confusion, as it makes numpad based keybindings indistinguishable
+			// from keybindings based on regular keys.
+			//
+			// We therefore need to fall back to custom rendering for numpad keys.
+			return null;
+		}
+
+		switch (keyCode) {
+			case KeyCode.UpArrow:
+				return 'Up';
+			case KeyCode.DownArrow:
+				return 'Down';
+			case KeyCode.LeftArrow:
+				return 'Left';
+			case KeyCode.RightArrow:
+				return 'Right';
+		}
+
+		return uiMap.keyCodeToStr(keyCode);
+	}
 }
 
 /**
@@ -440,7 +469,18 @@ export function createSimpleKeybinding(keybinding: number, OS: OperatingSystem):
 	return new SimpleKeybinding(ctrlKey, shiftKey, altKey, metaKey, keyCode);
 }
 
-export class SimpleKeybinding {
+export interface Modifiers {
+	readonly ctrlKey: boolean;
+	readonly shiftKey: boolean;
+	readonly altKey: boolean;
+	readonly metaKey: boolean;
+}
+
+export interface IBaseKeybinding extends Modifiers {
+	isDuplicateModifierCase(): boolean;
+}
+
+export class SimpleKeybinding implements IBaseKeybinding {
 	public readonly ctrlKey: boolean;
 	public readonly shiftKey: boolean;
 	public readonly altKey: boolean;
@@ -558,6 +598,8 @@ export class ResolvedKeybindingPart {
 	}
 }
 
+export type KeybindingModifier = 'ctrl' | 'shift' | 'alt' | 'meta';
+
 /**
  * A resolved keybinding. Can be a simple keybinding or a chord keybinding.
  */
@@ -597,6 +639,17 @@ export abstract class ResolvedKeybinding {
 
 	/**
 	 * Returns the parts that should be used for dispatching.
+	 * Returns null for parts consisting of only modifier keys
+	 * @example keybinding "Shift" -> null
+	 * @example keybinding ("D" with shift == true) -> "shift+D"
 	 */
 	public abstract getDispatchParts(): (string | null)[];
+
+	/**
+	 * Returns the parts that should be used for dispatching single modifier keys
+	 * Returns null for parts that contain more than one modifier or a regular key.
+	 * @example keybinding "Shift" -> "shift"
+	 * @example keybinding ("D" with shift == true") -> null
+	 */
+	public abstract getSingleModifierDispatchParts(): (KeybindingModifier | null)[];
 }

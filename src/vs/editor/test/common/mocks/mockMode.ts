@@ -5,10 +5,10 @@
 
 import { Event } from 'vs/base/common/event';
 import { Disposable } from 'vs/base/common/lifecycle';
-import { IMode, LanguageIdentifier } from 'vs/editor/common/modes';
+import { LanguageIdentifier } from 'vs/editor/common/modes';
 import { ILanguageSelection } from 'vs/editor/common/services/modeService';
 
-export class MockMode extends Disposable implements IMode {
+export class MockMode extends Disposable {
 	private readonly _languageIdentifier: LanguageIdentifier;
 
 	constructor(languageIdentifier: LanguageIdentifier) {
@@ -28,5 +28,4 @@ export class MockMode extends Disposable implements IMode {
 export class StaticLanguageSelector implements ILanguageSelection {
 	readonly onDidChange: Event<LanguageIdentifier> = Event.None;
 	constructor(public readonly languageIdentifier: LanguageIdentifier) { }
-	public dispose(): void { }
 }

@@ -12,12 +12,12 @@ import { NULL_STATE, nullTokenize2 } from 'vs/editor/common/modes/nullMode';
 
 export interface IReducedTokenizationSupport {
 	getInitialState(): IState;
-	tokenize2(line: string, state: IState, offsetDelta: number): TokenizationResult2;
+	tokenize2(line: string, hasEOL: boolean, state: IState, offsetDelta: number): TokenizationResult2;
 }
 
 const fallback: IReducedTokenizationSupport = {
 	getInitialState: () => NULL_STATE,
-	tokenize2: (buffer: string, state: IState, deltaOffset: number) => nullTokenize2(LanguageId.Null, buffer, state, deltaOffset)
+	tokenize2: (buffer: string, hasEOL: boolean, state: IState, deltaOffset: number) => nullTokenize2(LanguageId.Null, buffer, state, deltaOffset)
 };
 
 export function tokenizeToString(text: string, tokenizationSupport: IReducedTokenizationSupport = fallback): string {
@@ -28,6 +28,8 @@ export function tokenizeLineToHTML(text: string, viewLineTokens: IViewLineTokens
 	let result = `<div>`;
 	let charIndex = startOffset;
 	let tabsCharDelta = 0;
+
+	let prevIsSpace = true;
 
 	for (let tokenIndex = 0, tokenCount = viewLineTokens.getCount(); tokenIndex < tokenCount; tokenIndex++) {
 		const tokenEndIndex = viewLineTokens.getEndOffset(tokenIndex);
@@ -46,43 +48,64 @@ export function tokenizeLineToHTML(text: string, viewLineTokens: IViewLineTokens
 					let insertSpacesCount = tabSize - (charIndex + tabsCharDelta) % tabSize;
 					tabsCharDelta += insertSpacesCount - 1;
 					while (insertSpacesCount > 0) {
-						partContent += useNbsp ? '&nbsp;' : ' ';
+						if (useNbsp && prevIsSpace) {
+							partContent += '&#160;';
+							prevIsSpace = false;
+						} else {
+							partContent += ' ';
+							prevIsSpace = true;
+						}
 						insertSpacesCount--;
 					}
 					break;
 
 				case CharCode.LessThan:
 					partContent += '&lt;';
+					prevIsSpace = false;
 					break;
 
 				case CharCode.GreaterThan:
 					partContent += '&gt;';
+					prevIsSpace = false;
 					break;
 
 				case CharCode.Ampersand:
 					partContent += '&amp;';
+					prevIsSpace = false;
 					break;
 
 				case CharCode.Null:
 					partContent += '&#00;';
+					prevIsSpace = false;
 					break;
 
 				case CharCode.UTF8_BOM:
-				case CharCode.LINE_SEPARATOR_2028:
+				case CharCode.LINE_SEPARATOR:
+				case CharCode.PARAGRAPH_SEPARATOR:
+				case CharCode.NEXT_LINE:
 					partContent += '\ufffd';
+					prevIsSpace = false;
 					break;
 
 				case CharCode.CarriageReturn:
 					// zero width space, because carriage return would introduce a line break
 					partContent += '&#8203';
+					prevIsSpace = false;
 					break;
 
 				case CharCode.Space:
-					partContent += useNbsp ? '&nbsp;' : ' ';
+					if (useNbsp && prevIsSpace) {
+						partContent += '&#160;';
+						prevIsSpace = false;
+					} else {
+						partContent += ' ';
+						prevIsSpace = true;
+					}
 					break;
 
 				default:
 					partContent += String.fromCharCode(charCode);
+					prevIsSpace = false;
 			}
 		}
 
@@ -99,7 +122,7 @@ export function tokenizeLineToHTML(text: string, viewLineTokens: IViewLineTokens
 
 function _tokenizeToString(text: string, tokenizationSupport: IReducedTokenizationSupport): string {
 	let result = `<div class="monaco-tokenized-source">`;
-	let lines = text.split(/\r\n|\r|\n/);
+	let lines = strings.splitLines(text);
 	let currentState = tokenizationSupport.getInitialState();
 	for (let i = 0, len = lines.length; i < len; i++) {
 		let line = lines[i];
@@ -108,7 +131,7 @@ function _tokenizeToString(text: string, tokenizationSupport: IReducedTokenizati
 			result += `<br/>`;
 		}
 
-		let tokenizationResult = tokenizationSupport.tokenize2(line, currentState, 0);
+		let tokenizationResult = tokenizationSupport.tokenize2(line, true, currentState, 0);
 		LineTokens.convertToEndOffset(tokenizationResult.tokens, line.length);
 		let lineTokens = new LineTokens(tokenizationResult.tokens, line);
 		let viewLineTokens = lineTokens.inflate();

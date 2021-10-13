@@ -11,7 +11,7 @@ function roundFloat(number: number, decimalPoints: number): number {
 }
 
 export class RGBA {
-	_rgbaBrand: void;
+	_rgbaBrand: void = undefined;
 
 	/**
 	 * Red: integer in [0-255]
@@ -47,7 +47,7 @@ export class RGBA {
 
 export class HSLA {
 
-	_hslaBrand: void;
+	_hslaBrand: void = undefined;
 
 	/**
 	 * Hue: integer in [0, 360]
@@ -160,7 +160,7 @@ export class HSLA {
 
 export class HSVA {
 
-	_hsvaBrand: void;
+	_hsvaBrand: void = undefined;
 
 	/**
 	 * Hue: integer in [0, 360]
@@ -240,7 +240,7 @@ export class HSVA {
 		} else if (h < 300) {
 			r = x;
 			b = c;
-		} else if (h < 360) {
+		} else if (h <= 360) {
 			r = c;
 			b = x;
 		}
@@ -399,6 +399,23 @@ export class Color {
 		return new Color(new RGBA(r, g, b, a));
 	}
 
+	makeOpaque(opaqueBackground: Color): Color {
+		if (this.isOpaque() || opaqueBackground.rgba.a !== 1) {
+			// only allow to blend onto a non-opaque color onto a opaque color
+			return this;
+		}
+
+		const { r, g, b, a } = this.rgba;
+
+		// https://stackoverflow.com/questions/12228548/finding-equivalent-color-with-opacity
+		return new Color(new RGBA(
+			opaqueBackground.rgba.r - a * (opaqueBackground.rgba.r - r),
+			opaqueBackground.rgba.g - a * (opaqueBackground.rgba.g - g),
+			opaqueBackground.rgba.b - a * (opaqueBackground.rgba.b - b),
+			1
+		));
+	}
+
 	flatten(...backgrounds: Color[]): Color {
 		const background = backgrounds.reduceRight((accumulator, color) => {
 			return Color._flatten(color, accumulator);
@@ -415,8 +432,12 @@ export class Color {
 		));
 	}
 
+	private _toString?: string;
 	toString(): string {
-		return '' + Color.Format.CSS.format(this);
+		if (!this._toString) {
+			this._toString = Color.Format.CSS.format(this);
+		}
+		return this._toString;
 	}
 
 	static getLighterColor(of: Color, relative: Color, factor?: number): Color {
@@ -506,7 +527,7 @@ export namespace Color {
 			/**
 			 * The default format will use HEX if opaque and RGBA otherwise.
 			 */
-			export function format(color: Color): string | null {
+			export function format(color: Color): string {
 				if (color.isOpaque()) {
 					return Color.Format.CSS.formatHex(color);
 				}

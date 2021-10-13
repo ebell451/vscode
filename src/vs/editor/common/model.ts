@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { Event } from 'vs/base/common/event';
 import { IMarkdownString } from 'vs/base/common/htmlContent';
 import { IDisposable } from 'vs/base/common/lifecycle';
 import { URI } from 'vs/base/common/uri';
@@ -10,11 +11,13 @@ import { LineTokens } from 'vs/editor/common/core/lineTokens';
 import { IPosition, Position } from 'vs/editor/common/core/position';
 import { IRange, Range } from 'vs/editor/common/core/range';
 import { Selection } from 'vs/editor/common/core/selection';
-import { IModelContentChange, IModelContentChangedEvent, IModelDecorationsChangedEvent, IModelLanguageChangedEvent, IModelLanguageConfigurationChangedEvent, IModelOptionsChangedEvent, IModelTokensChangedEvent, ModelRawContentChangedEvent } from 'vs/editor/common/model/textModelEvents';
+import { IModelContentChange, IModelContentChangedEvent, IModelDecorationsChangedEvent, IModelLanguageChangedEvent, IModelLanguageConfigurationChangedEvent, IModelOptionsChangedEvent, IModelTokensChangedEvent, ModelInjectedTextChangedEvent, ModelRawContentChangedEvent } from 'vs/editor/common/model/textModelEvents';
 import { SearchData } from 'vs/editor/common/model/textModelSearch';
 import { LanguageId, LanguageIdentifier, FormattingOptions } from 'vs/editor/common/modes';
 import { ThemeColor } from 'vs/platform/theme/common/themeService';
-import { MultilineTokens } from 'vs/editor/common/model/tokensStore';
+import { MultilineTokens, MultilineTokens2 } from 'vs/editor/common/model/tokensStore';
+import { TextChange } from 'vs/editor/common/model/textChange';
+import { equals } from 'vs/base/common/objects';
 
 /**
  * Vertical Lane in the overview ruler of the editor.
@@ -30,7 +33,8 @@ export enum OverviewRulerLane {
  * Position in the minimap to render the decoration.
  */
 export enum MinimapPosition {
-	Inline = 1
+	Inline = 1,
+	Gutter = 2
 }
 
 export interface IDecorationOptions {
@@ -71,6 +75,11 @@ export interface IModelDecorationMinimapOptions extends IDecorationOptions {
  */
 export interface IModelDecorationOptions {
 	/**
+	 * A debug description that can be used for inspecting model decorations.
+	 * @internal
+	 */
+	description: string;
+	/**
 	 * Customize the growing behavior of the decoration when typing at the edges of the decoration.
 	 * Defaults to TrackedRangeStickiness.AlwaysGrowsWhenTypingAtEdges
 	 */
@@ -103,7 +112,8 @@ export interface IModelDecorationOptions {
 	collapseOnReplaceEdit?: boolean;
 	/**
 	 * Specifies the stack order of a decoration.
-	 * A decoration with greater stack order is always in front of a decoration with a lower stack order.
+	 * A decoration with greater stack order is always in front of a decoration with
+	 * a lower stack order when the decorations are on the same line.
 	 */
 	zIndex?: number;
 	/**
@@ -122,6 +132,10 @@ export interface IModelDecorationOptions {
 	 * If set, the decoration will be rendered in the lines decorations with this CSS class name.
 	 */
 	linesDecorationsClassName?: string | null;
+	/**
+	 * If set, the decoration will be rendered in the lines decorations with this CSS class name, but only for the first line in case of line wrapping.
+	 */
+	firstLineDecorationClassName?: string | null;
 	/**
 	 * If set, the decoration will be rendered in the margin (covering its full width) with this CSS class name.
 	 */
@@ -144,6 +158,35 @@ export interface IModelDecorationOptions {
 	 * If set, the decoration will be rendered after the text with this CSS class name.
 	 */
 	afterContentClassName?: string | null;
+	/**
+	 * If set, text will be injected in the view after the range.
+	 */
+	after?: InjectedTextOptions | null;
+
+	/**
+	 * If set, text will be injected in the view before the range.
+	 */
+	before?: InjectedTextOptions | null;
+}
+
+/**
+ * Configures text that is injected into the view without changing the underlying document.
+*/
+export interface InjectedTextOptions {
+	/**
+	 * Sets the text to inject. Must be a single line.
+	 */
+	readonly content: string;
+
+	/**
+	 * If set, the decoration will be rendered inline with the text with this CSS class name.
+	 */
+	readonly inlineClassName?: string | null;
+
+	/**
+	 * If there is an `inlineClassName` which affects letter spacing.
+	 */
+	readonly inlineClassNameAffectsLetterSpacing?: boolean;
 }
 
 /**
@@ -289,6 +332,7 @@ export const enum EndOfLineSequence {
 
 /**
  * An identifier for a single edit operation.
+ * @internal
  */
 export interface ISingleEditOperationIdentifier {
 	/**
@@ -333,7 +377,7 @@ export interface IIdentifiedSingleEditOperation {
 	/**
 	 * The range to replace. This can be empty to emulate a simple insert.
 	 */
-	range: Range;
+	range: IRange;
 	/**
 	 * The text to replace with. This can be null to emulate a simple delete.
 	 */
@@ -356,6 +400,26 @@ export interface IIdentifiedSingleEditOperation {
 	_isTracked?: boolean;
 }
 
+export interface IValidEditOperation {
+	/**
+	 * An identifier associated with this single edit operation.
+	 * @internal
+	 */
+	identifier: ISingleEditOperationIdentifier | null;
+	/**
+	 * The range to replace. This can be empty to emulate a simple insert.
+	 */
+	range: Range;
+	/**
+	 * The text to replace with. This can be empty to emulate a simple delete.
+	 */
+	text: string;
+	/**
+	 * @internal
+	 */
+	textChange: TextChange;
+}
+
 /**
  * A callback that can compute the cursor state after applying a series of edit operations.
  */
@@ -363,17 +427,18 @@ export interface ICursorStateComputer {
 	/**
 	 * A callback that can compute the resulting cursors state after some edit operations have been executed.
 	 */
-	(inverseEditOperations: IIdentifiedSingleEditOperation[]): Selection[] | null;
+	(inverseEditOperations: IValidEditOperation[]): Selection[] | null;
 }
 
 export class TextModelResolvedOptions {
-	_textModelResolvedOptionsBrand: void;
+	_textModelResolvedOptionsBrand: void = undefined;
 
 	readonly tabSize: number;
 	readonly indentSize: number;
 	readonly insertSpaces: boolean;
 	readonly defaultEOL: DefaultEndOfLine;
 	readonly trimAutoWhitespace: boolean;
+	readonly bracketPairColorizationOptions: BracketPairColorizationOptions;
 
 	/**
 	 * @internal
@@ -384,12 +449,14 @@ export class TextModelResolvedOptions {
 		insertSpaces: boolean;
 		defaultEOL: DefaultEndOfLine;
 		trimAutoWhitespace: boolean;
+		bracketPairColorizationOptions: BracketPairColorizationOptions;
 	}) {
-		this.tabSize = src.tabSize | 0;
+		this.tabSize = Math.max(1, src.tabSize | 0);
 		this.indentSize = src.tabSize | 0;
 		this.insertSpaces = Boolean(src.insertSpaces);
 		this.defaultEOL = src.defaultEOL | 0;
 		this.trimAutoWhitespace = Boolean(src.trimAutoWhitespace);
+		this.bracketPairColorizationOptions = src.bracketPairColorizationOptions;
 	}
 
 	/**
@@ -402,6 +469,7 @@ export class TextModelResolvedOptions {
 			&& this.insertSpaces === other.insertSpaces
 			&& this.defaultEOL === other.defaultEOL
 			&& this.trimAutoWhitespace === other.trimAutoWhitespace
+			&& equals(this.bracketPairColorizationOptions, other.bracketPairColorizationOptions)
 		);
 	}
 
@@ -430,6 +498,11 @@ export interface ITextModelCreationOptions {
 	defaultEOL: DefaultEndOfLine;
 	isForSimpleWidget: boolean;
 	largeFileOptimizations: boolean;
+	bracketPairColorizationOptions: BracketPairColorizationOptions;
+}
+
+export interface BracketPairColorizationOptions {
+	enabled: boolean;
 }
 
 export interface ITextModelUpdateOptions {
@@ -437,10 +510,11 @@ export interface ITextModelUpdateOptions {
 	indentSize?: number;
 	insertSpaces?: boolean;
 	trimAutoWhitespace?: boolean;
+	bracketColorizationOptions?: BracketPairColorizationOptions;
 }
 
 export class FindMatch {
-	_findMatchBrand: void;
+	_findMatchBrand: void = undefined;
 
 	public readonly range: Range;
 	public readonly matches: string[] | null;
@@ -524,6 +598,18 @@ export interface ITextModel {
 	mightContainRTL(): boolean;
 
 	/**
+	 * If true, the text model might contain LINE SEPARATOR (LS), PARAGRAPH SEPARATOR (PS).
+	 * If false, the text model definitely does not contain these.
+	 * @internal
+	 */
+	mightContainUnusualLineTerminators(): boolean;
+
+	/**
+	 * @internal
+	 */
+	removeUnusualLineTerminators(selections?: Selection[]): void;
+
+	/**
 	 * If true, the text model might contain non basic ASCII.
 	 * If false, the text model **contains only** basic ASCII.
 	 * @internal
@@ -561,12 +647,6 @@ export interface ITextModel {
 	setValue(newValue: string): void;
 
 	/**
-	 * Replace the entire text buffer value contained in this model.
-	 * @internal
-	 */
-	setValueFromTextBuffer(newValue: ITextBuffer): void;
-
-	/**
 	 * Get the text stored in this model.
 	 * @param eol The end of line character preference. Defaults to `EndOfLinePreference.TextDefined`.
 	 * @param preserverBOM Preserve a BOM character if it was detected when the model was constructed.
@@ -592,6 +672,12 @@ export interface ITextModel {
 	 * @internal
 	 */
 	equalsTextBuffer(other: ITextBuffer): boolean;
+
+	/**
+	 * Get the underling text buffer.
+	 * @internal
+	 */
+	getTextBuffer(): ITextBuffer;
 
 	/**
 	 * Get the text in a certain range.
@@ -648,6 +734,11 @@ export interface ITextModel {
 	 * @return EOL char sequence (e.g.: '\n' or '\r\n').
 	 */
 	getEOL(): string;
+
+	/**
+	 * Get the end of line sequence predominantly used in the text buffer.
+	 */
+	getEndOfLineSequence(): EndOfLineSequence;
 
 	/**
 	 * Get the minimum legal column for line at `lineNumber`
@@ -754,7 +845,7 @@ export interface ITextModel {
 	/**
 	 * Search the model.
 	 * @param searchString The string used to search. If it is a regular expression, set `isRegex` to true.
-	 * @param searchScope Limit the searching to only search inside this range.
+	 * @param searchScope Limit the searching to only search inside these ranges.
 	 * @param isRegex Used to indicate that `searchString` is a regular expression.
 	 * @param matchCase Force the matching to match lower/upper case exactly.
 	 * @param wordSeparators Force the matching to match entire words only. Pass null otherwise.
@@ -762,7 +853,7 @@ export interface ITextModel {
 	 * @param limitResultCount Limit the number of results
 	 * @return The ranges where the matches are. It is empty if no matches have been found.
 	 */
-	findMatches(searchString: string, searchScope: IRange, isRegex: boolean, matchCase: boolean, wordSeparators: string | null, captureMatches: boolean, limitResultCount?: number): FindMatch[];
+	findMatches(searchString: string, searchScope: IRange | IRange[], isRegex: boolean, matchCase: boolean, wordSeparators: string | null, captureMatches: boolean, limitResultCount?: number): FindMatch[];
 	/**
 	 * Search the model for the next match. Loops to the beginning of the model if needed.
 	 * @param searchString The string used to search. If it is a regular expression, set `isRegex` to true.
@@ -790,6 +881,26 @@ export interface ITextModel {
 	 * @internal
 	 */
 	setTokens(tokens: MultilineTokens[]): void;
+
+	/**
+	 * @internal
+	 */
+	setSemanticTokens(tokens: MultilineTokens2[] | null, isComplete: boolean): void;
+
+	/**
+	 * @internal
+	 */
+	setPartialSemanticTokens(range: Range, tokens: MultilineTokens2[] | null): void;
+
+	/**
+	 * @internal
+	 */
+	hasCompleteSemanticTokens(): boolean;
+
+	/**
+	 * @internal
+	 */
+	hasSomeSemanticTokens(): boolean;
 
 	/**
 	 * Flush all tokenization state.
@@ -892,7 +1003,7 @@ export interface ITextModel {
 	 * @param position The position at which to start the search.
 	 * @internal
 	 */
-	findEnclosingBrackets(position: IPosition): [Range, Range] | null;
+	findEnclosingBrackets(position: IPosition, maxDuration?: number): [Range, Range] | null;
 
 	/**
 	 * Given a `position`, if the position is on top or near a bracket,
@@ -911,6 +1022,11 @@ export interface ITextModel {
 	 * @internal
 	 */
 	getLinesIndentGuides(startLineNumber: number, endLineNumber: number): number[];
+
+	/**
+	 * @internal
+	 */
+	getLinesBracketGuides(startLineNumber: number, endLineNumber: number, activePosition: IPosition | null, options: BracketGuideOptions): IndentGuide[][];
 
 	/**
 	 * Change the decorations. The callback will be called with a change accessor
@@ -999,6 +1115,12 @@ export interface ITextModel {
 	getOverviewRulerDecorations(ownerId?: number, filterOutValidation?: boolean): IModelDecoration[];
 
 	/**
+	 * Gets all the decorations that contain injected text.
+	 * @param ownerId If set, it will ignore decorations belonging to other owners.
+	 */
+	getInjectedTextDecorations(ownerId?: number): IModelDecoration[];
+
+	/**
 	 * @internal
 	 */
 	_getTrackedRange(id: string): Range | null;
@@ -1028,11 +1150,16 @@ export interface ITextModel {
 	detectIndentation(defaultInsertSpaces: boolean, defaultTabSize: number): void;
 
 	/**
-	 * Push a stack element onto the undo stack. This acts as an undo/redo point.
-	 * The idea is to use `pushEditOperations` to edit the model and then to
-	 * `pushStackElement` to create an undo/redo stop point.
+	 * Close the current undo-redo element.
+	 * This offers a way to create an undo/redo stop point.
 	 */
 	pushStackElement(): void;
+
+	/**
+	 * Open the current undo-redo element.
+	 * This offers a way to remove the current undo/redo stop point.
+	 */
+	popStackElement(): void;
 
 	/**
 	 * Push edit operations, basically editing the model. This is the preferred way
@@ -1042,7 +1169,7 @@ export interface ITextModel {
 	 * @param cursorStateComputer A callback that can compute the resulting cursors state after the edit operations have been executed.
 	 * @return The cursor state returned by the `cursorStateComputer`.
 	 */
-	pushEditOperations(beforeCursorState: Selection[], editOperations: IIdentifiedSingleEditOperation[], cursorStateComputer: ICursorStateComputer): Selection[] | null;
+	pushEditOperations(beforeCursorState: Selection[] | null, editOperations: IIdentifiedSingleEditOperation[], cursorStateComputer: ICursorStateComputer): Selection[] | null;
 
 	/**
 	 * Change the end of line sequence. This is the preferred way of
@@ -1054,9 +1181,11 @@ export interface ITextModel {
 	 * Edit the model without adding the edits to the undo stack.
 	 * This can have dire consequences on the undo stack! See @pushEditOperations for the preferred way.
 	 * @param operations The edit operations.
-	 * @return The inverse edit operations, that, when applied, will bring the model back to the previous state.
+	 * @return If desired, the inverse edit operations, that, when applied, will bring the model back to the previous state.
 	 */
-	applyEdits(operations: IIdentifiedSingleEditOperation[]): IIdentifiedSingleEditOperation[];
+	applyEdits(operations: IIdentifiedSingleEditOperation[]): void;
+	applyEdits(operations: IIdentifiedSingleEditOperation[], computeUndoEdits: false): void;
+	applyEdits(operations: IIdentifiedSingleEditOperation[], computeUndoEdits: true): IValidEditOperation[];
 
 	/**
 	 * Change the end of line sequence without recording in the undo stack.
@@ -1065,11 +1194,21 @@ export interface ITextModel {
 	setEOL(eol: EndOfLineSequence): void;
 
 	/**
-	 * Undo edit operations until the first previous stop point created by `pushStackElement`.
+	 * @internal
+	 */
+	_applyUndo(changes: TextChange[], eol: EndOfLineSequence, resultingAlternativeVersionId: number, resultingSelection: Selection[] | null): void;
+
+	/**
+	 * @internal
+	 */
+	_applyRedo(changes: TextChange[], eol: EndOfLineSequence, resultingAlternativeVersionId: number, resultingSelection: Selection[] | null): void;
+
+	/**
+	 * Undo edit operations until the previous undo/redo point.
 	 * The inverse edit operations will be pushed on the redo stack.
 	 * @internal
 	 */
-	undo(): Selection[] | null;
+	undo(): void | Promise<void>;
 
 	/**
 	 * Is there anything in the undo stack?
@@ -1078,11 +1217,11 @@ export interface ITextModel {
 	canUndo(): boolean;
 
 	/**
-	 * Redo edit operations until the next stop point created by `pushStackElement`.
+	 * Redo edit operations until the next undo/redo point.
 	 * The inverse edit operations will be pushed on the undo stack.
 	 * @internal
 	 */
-	redo(): Selection[] | null;
+	redo(): void | Promise<void>;
 
 	/**
 	 * Is there anything in the redo stack?
@@ -1096,7 +1235,7 @@ export interface ITextModel {
 	 * @internal
 	 * @event
 	 */
-	onDidChangeRawContentFast(listener: (e: ModelRawContentChangedEvent) => void): IDisposable;
+	onDidChangeContentOrInjectedText(listener: (e: ModelRawContentChangedEvent | ModelInjectedTextChangedEvent) => void): IDisposable;
 	/**
 	 * @deprecated Please use `onDidChangeContent` instead.
 	 * An event emitted when the contents of the model have changed.
@@ -1138,7 +1277,6 @@ export interface ITextModel {
 	/**
 	 * An event emitted when the model has been attached to the first editor or detached from the last editor.
 	 * @event
-	 * @internal
 	 */
 	onDidChangeAttached(listener: () => void): IDisposable;
 	/**
@@ -1165,7 +1303,6 @@ export interface ITextModel {
 
 	/**
 	 * Returns if this model is attached to an editor or not.
-	 * @internal
 	 */
 	isAttachedToEditor(): boolean;
 
@@ -1174,6 +1311,125 @@ export interface ITextModel {
 	 * @internal
 	 */
 	getAttachedEditorCount(): number;
+
+	/**
+	 * Among all positions that are projected to the same position in the underlying text model as
+	 * the given position, select a unique position as indicated by the affinity.
+	 *
+	 * PositionAffinity.Left:
+	 * The normalized position must be equal or left to the requested position.
+	 *
+	 * PositionAffinity.Right:
+	 * The normalized position must be equal or right to the requested position.
+	 *
+	 * @internal
+	 */
+	normalizePosition(position: Position, affinity: PositionAffinity): Position;
+
+	/**
+	 * Gets the column at which indentation stops at a given line.
+	 * @internal
+	*/
+	getLineIndentColumn(lineNumber: number): number;
+}
+
+/**
+ * @internal
+ */
+export enum HorizontalGuidesState {
+	Disabled,
+	EnabledForActive,
+	Enabled
+}
+
+/**
+ * @internal
+ */
+export interface BracketGuideOptions {
+	includeInactive: boolean,
+	horizontalGuides: HorizontalGuidesState,
+	highlightActive: boolean,
+}
+
+/**
+ * @internal
+ */
+export class IndentGuide {
+	constructor(
+		public readonly visibleColumn: number,
+		public readonly className: string,
+		/**
+		 * If set, this indent guide is a horizontal guide (no vertical part).
+		 * It starts at visibleColumn and continues until endColumn.
+		*/
+		public readonly horizontalLine: IndentGuideHorizontalLine | null,
+	) { }
+}
+
+/**
+ * @internal
+ */
+export class IndentGuideHorizontalLine {
+	constructor(
+		public readonly top: boolean,
+		public readonly endColumn: number,
+	) { }
+}
+
+/**
+ * @internal
+ */
+export class BracketPair {
+	constructor(
+		public readonly range: Range,
+		public readonly openingBracketRange: Range,
+		public readonly closingBracketRange: Range | undefined,
+		/**
+		 * 0-based
+		*/
+		public readonly nestingLevel: number,
+	) { }
+}
+
+/**
+ * @internal
+ */
+export class BracketPairWithMinIndentation extends BracketPair {
+	constructor(
+		range: Range,
+		openingBracketRange: Range,
+		closingBracketRange: Range | undefined,
+		/**
+		 * 0-based
+		*/
+		nestingLevel: number,
+		/**
+		 * -1 if not requested, otherwise the size of the minimum indentation in the bracket pair in terms of visible columns.
+		*/
+		public readonly minVisibleColumnIndentation: number,
+	) {
+		super(range, openingBracketRange, closingBracketRange, nestingLevel);
+	}
+}
+
+/**
+ * @internal
+ */
+export const enum PositionAffinity {
+	/**
+	 * Prefers the left most position.
+	*/
+	Left = 0,
+
+	/**
+	 * Prefers the right most position.
+	*/
+	Right = 1,
+
+	/**
+	 * No preference.
+	*/
+	None = 2,
 }
 
 /**
@@ -1188,7 +1444,7 @@ export interface ITextBufferBuilder {
  * @internal
  */
 export interface ITextBufferFactory {
-	create(defaultEOL: DefaultEndOfLine): ITextBuffer;
+	create(defaultEOL: DefaultEndOfLine): { textBuffer: ITextBuffer; disposable: IDisposable; };
 	getFirstLineText(lengthLimit: number): string;
 }
 
@@ -1202,9 +1458,26 @@ export const enum ModelConstants {
 /**
  * @internal
  */
-export interface ITextBuffer {
+export class ValidAnnotatedEditOperation implements IIdentifiedSingleEditOperation {
+	constructor(
+		public readonly identifier: ISingleEditOperationIdentifier | null,
+		public readonly range: Range,
+		public readonly text: string | null,
+		public readonly forceMoveMarkers: boolean,
+		public readonly isAutoWhitespaceEdit: boolean,
+		public readonly _isTracked: boolean,
+	) { }
+}
+
+/**
+ * @internal
+ */
+export interface IReadonlyTextBuffer {
+	onDidChangeContent: Event<void>;
 	equals(other: ITextBuffer): boolean;
 	mightContainRTL(): boolean;
+	mightContainUnusualLineTerminators(): boolean;
+	resetMightContainUnusualLineTerminators(): void;
 	mightContainNonBasicASCII(): boolean;
 	getBOM(): string;
 	getEOL(): string;
@@ -1222,13 +1495,19 @@ export interface ITextBuffer {
 	getLinesContent(): string[];
 	getLineContent(lineNumber: number): string;
 	getLineCharCode(lineNumber: number, index: number): number;
+	getCharCode(offset: number): number;
 	getLineLength(lineNumber: number): number;
 	getLineFirstNonWhitespaceColumn(lineNumber: number): number;
 	getLineLastNonWhitespaceColumn(lineNumber: number): number;
-
-	setEOL(newEOL: '\r\n' | '\n'): void;
-	applyEdits(rawOperations: IIdentifiedSingleEditOperation[], recordTrimAutoWhitespace: boolean): ApplyEditsResult;
 	findMatchesLineByLine(searchRange: Range, searchData: SearchData, captureMatches: boolean, limitResultCount: number): FindMatch[];
+}
+
+/**
+ * @internal
+ */
+export interface ITextBuffer extends IReadonlyTextBuffer {
+	setEOL(newEOL: '\r\n' | '\n'): void;
+	applyEdits(rawOperations: ValidAnnotatedEditOperation[], recordTrimAutoWhitespace: boolean, computeUndoEdits: boolean): ApplyEditsResult;
 }
 
 /**
@@ -1237,7 +1516,7 @@ export interface ITextBuffer {
 export class ApplyEditsResult {
 
 	constructor(
-		public readonly reverseEdits: IIdentifiedSingleEditOperation[],
+		public readonly reverseEdits: IValidEditOperation[] | null,
 		public readonly changes: IInternalModelContentChange[],
 		public readonly trimAutoWhitespaceLineNumbers: number[] | null
 	) { }

@@ -3,13 +3,16 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { CancellationToken } from 'vs/base/common/cancellation';
+import { Disposable, IDisposable } from 'vs/base/common/lifecycle';
+import { equalsIgnoreCase, startsWithIgnoreCase } from 'vs/base/common/strings';
 import { URI } from 'vs/base/common/uri';
+import { IEditorOptions } from 'vs/platform/editor/common/editor';
 import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
-import { IDisposable, Disposable } from 'vs/base/common/lifecycle';
 
 export const IOpenerService = createDecorator<IOpenerService>('openerService');
 
-type OpenInternalOptions = {
+export type OpenInternalOptions = {
 
 	/**
 	 * Signals that the intent is to open an editor to the side
@@ -18,23 +21,47 @@ type OpenInternalOptions = {
 	readonly openToSide?: boolean;
 
 	/**
+	 * Extra editor options to apply in case an editor is used to open.
+	 */
+	readonly editorOptions?: IEditorOptions;
+
+	/**
 	 * Signals that the editor to open was triggered through a user
 	 * action, such as keyboard or mouse usage.
 	 */
 	readonly fromUserGesture?: boolean;
+
+	/**
+	 * Allow command links to be handled.
+	 */
+	readonly allowCommands?: boolean;
 };
 
-type OpenExternalOptions = { readonly openExternal?: boolean; readonly allowTunneling?: boolean };
+export type OpenExternalOptions = {
+	readonly openExternal?: boolean;
+	readonly allowTunneling?: boolean;
+	readonly allowContributedOpeners?: boolean | string;
+};
 
 export type OpenOptions = OpenInternalOptions & OpenExternalOptions;
 
+export type ResolveExternalUriOptions = { readonly allowTunneling?: boolean };
+
+export interface IResolvedExternalUri extends IDisposable {
+	resolved: URI;
+}
+
 export interface IOpener {
-	open(resource: URI, options?: OpenInternalOptions): Promise<boolean>;
-	open(resource: URI, options?: OpenExternalOptions): Promise<boolean>;
+	open(resource: URI | string, options?: OpenInternalOptions | OpenExternalOptions): Promise<boolean>;
+}
+
+export interface IExternalOpener {
+	openExternal(href: string, ctx: { sourceUri: URI, preferredOpenerId?: string }, token: CancellationToken): Promise<boolean>;
+	dispose?(): void;
 }
 
 export interface IValidator {
-	shouldOpen(resource: URI): Promise<boolean>;
+	shouldOpen(resource: URI | string): Promise<boolean>;
 }
 
 export interface IExternalUriResolver {
@@ -43,7 +70,7 @@ export interface IExternalUriResolver {
 
 export interface IOpenerService {
 
-	_serviceBrand: undefined;
+	readonly _serviceBrand: undefined;
 
 	/**
 	 * Register a participant that can handle the open() call.
@@ -62,22 +89,46 @@ export interface IOpenerService {
 	registerExternalUriResolver(resolver: IExternalUriResolver): IDisposable;
 
 	/**
+	 * Sets the handler for opening externally. If not provided,
+	 * a default handler will be used.
+	 */
+	setDefaultExternalOpener(opener: IExternalOpener): void;
+
+	/**
+	 * Registers a new opener external resources openers.
+	 */
+	registerExternalOpener(opener: IExternalOpener): IDisposable;
+
+	/**
 	 * Opens a resource, like a webaddress, a document uri, or executes command.
 	 *
 	 * @param resource A resource
 	 * @return A promise that resolves when the opening is done.
 	 */
-	open(resource: URI, options?: OpenInternalOptions): Promise<boolean>;
-	open(resource: URI, options?: OpenExternalOptions): Promise<boolean>;
+	open(resource: URI | string, options?: OpenInternalOptions | OpenExternalOptions): Promise<boolean>;
 
-	resolveExternalUri(resource: URI, options?: { readonly allowTunneling?: boolean }): Promise<{ resolved: URI, dispose(): void }>;
+	/**
+	 * Resolve a resource to its external form.
+	 * @throws whenever resolvers couldn't resolve this resource externally.
+	 */
+	resolveExternalUri(resource: URI, options?: ResolveExternalUriOptions): Promise<IResolvedExternalUri>;
 }
 
-export const NullOpenerService: IOpenerService = Object.freeze({
+export const NullOpenerService = Object.freeze({
 	_serviceBrand: undefined,
 	registerOpener() { return Disposable.None; },
 	registerValidator() { return Disposable.None; },
 	registerExternalUriResolver() { return Disposable.None; },
-	open() { return Promise.resolve(false); },
+	setDefaultExternalOpener() { },
+	registerExternalOpener() { return Disposable.None; },
+	async open() { return false; },
 	async resolveExternalUri(uri: URI) { return { resolved: uri, dispose() { } }; },
-});
+} as IOpenerService);
+
+export function matchesScheme(target: URI | string, scheme: string) {
+	if (URI.isUri(target)) {
+		return equalsIgnoreCase(target.scheme, scheme);
+	} else {
+		return startsWithIgnoreCase(target, scheme + ':');
+	}
+}

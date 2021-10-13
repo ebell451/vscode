@@ -105,7 +105,7 @@ export class WorkbenchModeServiceImpl extends ModeServiceImpl {
 		this._configurationService = configurationService;
 		this._extensionService = extensionService;
 
-		languagesExtPoint.setHandler((extensions: IExtensionPointUser<IRawLanguageExtensionPoint[]>[]) => {
+		languagesExtPoint.setHandler((extensions: readonly IExtensionPointUser<IRawLanguageExtensionPoint[]>[]) => {
 			let allValidLanguages: ILanguageExtensionPoint[] = [];
 
 			for (let i = 0, len = extensions.length; i < len; i++) {
@@ -151,12 +151,12 @@ export class WorkbenchModeServiceImpl extends ModeServiceImpl {
 			this.updateMime();
 		});
 
-		this.onDidCreateMode((mode) => {
-			this._extensionService.activateByEvent(`onLanguage:${mode.getId()}`);
+		this.onDidEncounterLanguage((languageIdentifier) => {
+			this._extensionService.activateByEvent(`onLanguage:${languageIdentifier.language}`);
 		});
 	}
 
-	protected _onReady(): Promise<boolean> {
+	protected override _onReady(): Promise<boolean> {
 		if (!this._onReadyPromise) {
 			this._onReadyPromise = Promise.resolve(
 				this._extensionService.whenInstalledExtensionsRegistered().then(() => true)
