@@ -31,7 +31,7 @@ export class TelemetryService implements ITelemetryService {
 	declare readonly _serviceBrand: undefined;
 
 	private _appenders: ITelemetryAppender[];
-	private _commonProperties: Promise<{ [name: string]: any; }>;
+	private _commonProperties: Promise<{ [name: string]: any }>;
 	private _experimentProperties: { [name: string]: string } = {};
 	private _piiPaths: string[];
 	private _telemetryLevel: TelemetryLevel;
@@ -60,22 +60,6 @@ export class TelemetryService implements ITelemetryService {
 
 		this._updateTelemetryLevel();
 		this._configurationService.onDidChangeConfiguration(this._updateTelemetryLevel, this, this._disposables);
-		type OptInClassification = {
-			optIn: { classification: 'SystemMetaData', purpose: 'BusinessInsight', isMeasurement: true };
-		};
-		type OptInEvent = {
-			optIn: boolean;
-		};
-		this.publicLog2<OptInEvent, OptInClassification>('optInStatus', { optIn: this._telemetryLevel === TelemetryLevel.USAGE });
-
-		this._commonProperties.then(values => {
-			const isHashedId = /^[a-f0-9]+$/i.test(values['common.machineId']);
-
-			type MachineIdFallbackClassification = {
-				usingFallbackGuid: { classification: 'SystemMetaData', purpose: 'BusinessInsight', isMeasurement: true };
-			};
-			this.publicLog2<{ usingFallbackGuid: boolean }, MachineIdFallbackClassification>('machineIdFallback', { usingFallbackGuid: !isHashedId });
-		});
 	}
 
 	setExperimentProperty(name: string, value: string): void {
@@ -95,12 +79,11 @@ export class TelemetryService implements ITelemetryService {
 
 		// well known properties
 		let sessionId = values['sessionID'];
-		let instanceId = values['common.instanceId'];
 		let machineId = values['common.machineId'];
 		let firstSessionDate = values['common.firstSessionDate'];
 		let msftInternal = values['common.msftInternal'];
 
-		return { sessionId, instanceId, machineId, firstSessionDate, msftInternal };
+		return { sessionId, machineId, firstSessionDate, msftInternal };
 	}
 
 	dispose(): void {
@@ -204,15 +187,17 @@ export class TelemetryService implements ITelemetryService {
 
 		const value = property.toLowerCase();
 
-		// Regex which matches @*.site
-		const emailRegex = /@[a-zA-Z0-9-.]+/;
-		const secretRegex = /\S*(key|token|sig|password|passwd|pwd)[="':\s]+\S*/;
+		const emailRegex = /@[a-zA-Z0-9-.]+/; // Regex which matches @*.site
+		const secretRegex = /(key|token|sig|signature|password|passwd|pwd|android:value)[^a-zA-Z0-9]/;
+		const tokenRegex = /xox[pbaors]\-[a-zA-Z0-9]+\-[a-zA-Z0-9\-]+?/; // last +? is lazy as a microoptimization since we don't care about the full value
 
 		// Check for common user data in the telemetry events
 		if (secretRegex.test(value)) {
 			return '<REDACTED: secret>';
 		} else if (emailRegex.test(value)) {
 			return '<REDACTED: email>';
+		} else if (tokenRegex.test(value)) {
+			return '<REDACTED: token>';
 		}
 
 		return property;
@@ -241,8 +226,10 @@ export class TelemetryService implements ITelemetryService {
 
 function getTelemetryLevelSettingDescription(): string {
 	const telemetryText = localize('telemetry.telemetryLevelMd', "Controls all core and first party extension telemetry. This helps us to better understand how {0} is performing, where improvements need to be made, and how features are being used.", product.nameLong);
-	const privacyStatement = product.privacyStatementUrl ? ' ' + localize("telemetry.privacyStatement", "[Read more]({1}) about what we collect and our privacy statement.", product.privacyStatementUrl) : '';
-	const restartString = !isWeb ? ' ' + localize('telemetry.restart', 'A full restart of the application is necessary for crash reporting changes to take effect.') : '';
+	const externalLinksStatement = !product.privacyStatementUrl ?
+		localize("telemetry.docsStatement", "Read more about the [data we collect]({0}).", 'https://aka.ms/vscode-telemetry') :
+		localize("telemetry.docsAndPrivacyStatement", "Read more about the [data we collect]({0}) and our [privacy statement]({1}).", 'https://aka.ms/vscode-telemetry', product.privacyStatementUrl);
+	const restartString = !isWeb ? localize('telemetry.restart', 'A full restart of the application is necessary for crash reporting changes to take effect.') : '';
 
 	const crashReportsHeader = localize('telemetry.crashReports', "Crash Reports");
 	const errorsHeader = localize('telemetry.errors', "Error Telemetry");
@@ -260,7 +247,7 @@ function getTelemetryLevelSettingDescription(): string {
 
 	const deprecatedSettingNote = localize('telemetry.telemetryLevel.deprecated', "****Note:*** If this setting is 'off', no telemetry will be sent regardless of other telemetry settings. If this setting is set to anything except 'off' and telemetry is disabled with deprecated settings, no telemetry will be sent.*");
 	const telemetryDescription = `
-${telemetryText}${privacyStatement}${restartString}
+${telemetryText} ${externalLinksStatement} ${restartString}
 
 &nbsp;
 

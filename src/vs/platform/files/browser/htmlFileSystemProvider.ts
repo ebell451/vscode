@@ -15,6 +15,7 @@ import { isLinux } from 'vs/base/common/platform';
 import { extUri, extUriIgnorePathCase } from 'vs/base/common/resources';
 import { newWriteableStream, ReadableStreamEvents } from 'vs/base/common/stream';
 import { createFileSystemProviderError, FileDeleteOptions, FileOverwriteOptions, FileReadStreamOptions, FileSystemProviderCapabilities, FileSystemProviderError, FileSystemProviderErrorCode, FileType, FileWriteOptions, IFileSystemProviderWithFileReadStreamCapability, IFileSystemProviderWithFileReadWriteCapability, IStat, IWatchOptions } from 'vs/platform/files/common/files';
+import { WebFileSystemAccess } from 'vs/platform/files/browser/webFileSystemAccess';
 
 export class HTMLFileSystemProvider implements IFileSystemProviderWithFileReadWriteCapability, IFileSystemProviderWithFileReadStreamCapability {
 
@@ -22,7 +23,6 @@ export class HTMLFileSystemProvider implements IFileSystemProviderWithFileReadWr
 
 	readonly onDidChangeCapabilities = Event.None;
 	readonly onDidChangeFile = Event.None;
-	readonly onDidErrorOccur = Event.None;
 
 	//#endregion
 
@@ -56,7 +56,7 @@ export class HTMLFileSystemProvider implements IFileSystemProviderWithFileReadWr
 				throw this.createFileSystemProviderError(resource, 'No such file or directory, stat', FileSystemProviderErrorCode.FileNotFound);
 			}
 
-			if (handle.kind === 'file') {
+			if (WebFileSystemAccess.isFileSystemFileHandle(handle)) {
 				const file = await handle.getFile();
 
 				return {
@@ -88,7 +88,7 @@ export class HTMLFileSystemProvider implements IFileSystemProviderWithFileReadWr
 			const result: [string, FileType][] = [];
 
 			for await (const [name, child] of handle) {
-				result.push([name, child.kind === 'file' ? FileType.File : FileType.Directory]);
+				result.push([name, WebFileSystemAccess.isFileSystemFileHandle(child) ? FileType.File : FileType.Directory]);
 			}
 
 			return result;
@@ -135,7 +135,8 @@ export class HTMLFileSystemProvider implements IFileSystemProviderWithFileReadWr
 
 				// Entire file
 				else {
-					const reader: ReadableStreamDefaultReader<Uint8Array> = file.stream().getReader();
+					// TODO@electron: duplicate type definitions originate from `@types/node/stream/consumers.d.ts`
+					const reader: ReadableStreamDefaultReader<Uint8Array> = (file.stream() as unknown as ReadableStream<Uint8Array>).getReader();
 
 					let res = await reader.read();
 					while (!res.done) {
@@ -285,15 +286,19 @@ export class HTMLFileSystemProvider implements IFileSystemProviderWithFileReadWr
 
 	//#region File/Directoy Handle Registry
 
-	private readonly files = new Map<string, FileSystemFileHandle>();
-	private readonly directories = new Map<string, FileSystemDirectoryHandle>();
+	private readonly _files = new Map<string, FileSystemFileHandle>();
+	private readonly _directories = new Map<string, FileSystemDirectoryHandle>();
 
 	registerFileHandle(handle: FileSystemFileHandle): URI {
-		return this.registerHandle(handle, this.files);
+		return this.registerHandle(handle, this._files);
 	}
 
 	registerDirectoryHandle(handle: FileSystemDirectoryHandle): URI {
-		return this.registerHandle(handle, this.directories);
+		return this.registerHandle(handle, this._directories);
+	}
+
+	get directories(): Iterable<FileSystemDirectoryHandle> {
+		return this._directories.values();
 	}
 
 	private registerHandle(handle: FileSystemHandle, map: Map<string, FileSystemHandle>): URI {
@@ -345,9 +350,9 @@ export class HTMLFileSystemProvider implements IFileSystemProviderWithFileReadWr
 			return undefined;
 		}
 
-		const handleId = resource.path;
+		const handleId = resource.path.replace(/\/$/, ''); // remove potential slash from the end of the path
+		const handle = this._files.get(handleId) ?? this._directories.get(handleId);
 
-		const handle = this.files.get(handleId) || this.directories.get(handleId);
 		if (!handle) {
 			throw this.createFileSystemProviderError(resource, 'No file system handle registered', FileSystemProviderErrorCode.Unavailable);
 		}

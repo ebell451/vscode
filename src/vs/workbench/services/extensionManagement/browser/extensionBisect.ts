@@ -36,7 +36,7 @@ export interface IExtensionBisectService {
 	isActive: boolean;
 	disabledCount: number;
 	start(extensions: ILocalExtension[]): Promise<void>;
-	next(seeingBad: boolean): Promise<{ id: string, bad: boolean } | undefined>;
+	next(seeingBad: boolean): Promise<{ id: string; bad: boolean } | undefined>;
 	reset(): Promise<void>;
 }
 
@@ -129,7 +129,7 @@ class ExtensionBisectService implements IExtensionBisectService {
 		await this._storageService.flush();
 	}
 
-	async next(seeingBad: boolean): Promise<{ id: string; bad: boolean; } | undefined> {
+	async next(seeingBad: boolean): Promise<{ id: string; bad: boolean } | undefined> {
 		if (!this._state) {
 			throw new Error('invalid state');
 		}
@@ -195,9 +195,13 @@ class ExtensionBisectUi {
 			run: () => this._commandService.executeCommand('extension.bisect.stop')
 		};
 
+		const message = this._extensionBisectService.disabledCount === 1
+			? localize('bisect.singular', "Extension Bisect is active and has disabled 1 extension. Check if you can still reproduce the problem and proceed by selecting from these options.")
+			: localize('bisect.plural', "Extension Bisect is active and has disabled {0} extensions. Check if you can still reproduce the problem and proceed by selecting from these options.", this._extensionBisectService.disabledCount);
+
 		this._notificationService.prompt(
 			Severity.Info,
-			localize('bisect', "Extension Bisect is active and has disabled {0} extensions. Check if you can still reproduce the problem and proceed by selecting from these options.", this._extensionBisectService.disabledCount),
+			message,
 			[goodPrompt, badPrompt, stop],
 			{ sticky: true }
 		);
@@ -253,7 +257,7 @@ registerAction2(class extends Action2 {
 	constructor() {
 		super({
 			id: 'extension.bisect.next',
-			title: localize('title.isBad', "Continue Extension Bisect"),
+			title: { value: localize('title.isBad', "Continue Extension Bisect"), original: 'Continue Extension Bisect' },
 			category: localize('help', "Help"),
 			f1: true,
 			precondition: ExtensionBisectUi.ctxIsBisectActive
@@ -340,7 +344,7 @@ registerAction2(class extends Action2 {
 	constructor() {
 		super({
 			id: 'extension.bisect.stop',
-			title: localize('title.stop', "Stop Extension Bisect"),
+			title: { value: localize('title.stop', "Stop Extension Bisect"), original: 'Stop Extension Bisect' },
 			category: localize('help', "Help"),
 			f1: true,
 			precondition: ExtensionBisectUi.ctxIsBisectActive

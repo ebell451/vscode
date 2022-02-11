@@ -13,10 +13,12 @@ import { HTMLFileSystemProvider } from 'vs/platform/files/browser/htmlFileSystem
 import { localize } from 'vs/nls';
 import { getMediaOrTextMime } from 'vs/base/common/mime';
 import { basename } from 'vs/base/common/resources';
-import { triggerDownload, triggerUpload, WebFileSystemAccess } from 'vs/base/browser/dom';
+import { triggerDownload, triggerUpload } from 'vs/base/browser/dom';
 import Severity from 'vs/base/common/severity';
 import { VSBuffer } from 'vs/base/common/buffer';
 import { extractFilesDropData } from 'vs/workbench/browser/dnd';
+import { Iterable } from 'vs/base/common/iterator';
+import { WebFileSystemAccess } from 'vs/platform/files/browser/webFileSystemAccess';
 
 export class FileDialogService extends AbstractFileDialogService implements IFileDialogService {
 
@@ -66,6 +68,10 @@ export class FileDialogService extends AbstractFileDialogService implements IFil
 			return; // `showOpenFilePicker` will throw an error when the user cancels
 		}
 
+		if (!WebFileSystemAccess.isFileSystemFileHandle(fileHandle)) {
+			return;
+		}
+
 		const uri = this.fileSystemProvider.registerFileHandle(fileHandle);
 
 		await this.openerService.open(uri, { fromUserGesture: true, editorOptions: { pinned: true } });
@@ -113,10 +119,16 @@ export class FileDialogService extends AbstractFileDialogService implements IFil
 		}
 
 		let fileHandle: FileSystemHandle | undefined = undefined;
+		const startIn = Iterable.first(this.fileSystemProvider.directories);
+
 		try {
-			fileHandle = await window.showSaveFilePicker({ types: this.getFilePickerTypes(options.filters), ...{ suggestedName: basename(defaultUri) } });
+			fileHandle = await window.showSaveFilePicker({ types: this.getFilePickerTypes(options.filters), ...{ suggestedName: basename(defaultUri), startIn } });
 		} catch (error) {
 			return; // `showSaveFilePicker` will throw an error when the user cancels
+		}
+
+		if (!WebFileSystemAccess.isFileSystemFileHandle(fileHandle)) {
+			return undefined;
 		}
 
 		return this.fileSystemProvider.registerFileHandle(fileHandle);
@@ -148,10 +160,16 @@ export class FileDialogService extends AbstractFileDialogService implements IFil
 		}
 
 		let fileHandle: FileSystemHandle | undefined = undefined;
+		const startIn = Iterable.first(this.fileSystemProvider.directories);
+
 		try {
-			fileHandle = await window.showSaveFilePicker({ types: this.getFilePickerTypes(options.filters), ...options.defaultUri ? { suggestedName: basename(options.defaultUri) } : undefined });
+			fileHandle = await window.showSaveFilePicker({ types: this.getFilePickerTypes(options.filters), ...options.defaultUri ? { suggestedName: basename(options.defaultUri) } : undefined, ...{ startIn } });
 		} catch (error) {
-			return; // `showSaveFilePicker` will throw an error when the user cancels
+			return undefined; // `showSaveFilePicker` will throw an error when the user cancels
+		}
+
+		if (!WebFileSystemAccess.isFileSystemFileHandle(fileHandle)) {
+			return undefined;
 		}
 
 		return this.fileSystemProvider.registerFileHandle(fileHandle);
@@ -169,14 +187,16 @@ export class FileDialogService extends AbstractFileDialogService implements IFil
 		}
 
 		let uri: URI | undefined;
+		const startIn = Iterable.first(this.fileSystemProvider.directories) ?? 'documents';
+
 		try {
 			if (options.canSelectFiles) {
-				const handle = await window.showOpenFilePicker({ multiple: false, types: this.getFilePickerTypes(options.filters) });
-				if (handle.length === 1) {
+				const handle = await window.showOpenFilePicker({ multiple: false, types: this.getFilePickerTypes(options.filters), ...{ startIn } });
+				if (handle.length === 1 && WebFileSystemAccess.isFileSystemFileHandle(handle[0])) {
 					uri = this.fileSystemProvider.registerFileHandle(handle[0]);
 				}
 			} else {
-				const handle = await window.showDirectoryPicker();
+				const handle = await window.showDirectoryPicker({ ...{ startIn } });
 				uri = this.fileSystemProvider.registerDirectoryHandle(handle);
 			}
 		} catch (error) {

@@ -14,7 +14,7 @@ import { URI } from 'vs/base/common/uri';
 import { CommandsRegistry, ICommandHandlerDescription, ICommandService } from 'vs/platform/commands/common/commands';
 import { ContextKeyExpr, ContextKeyExpression, IContextKeyService } from 'vs/platform/contextkey/common/contextkey';
 import { SyncDescriptor, SyncDescriptor0 } from 'vs/platform/instantiation/common/descriptors';
-import { BrandedService, createDecorator, IConstructorSignature2, ServicesAccessor } from 'vs/platform/instantiation/common/instantiation';
+import { BrandedService, createDecorator, IConstructorSignature, ServicesAccessor } from 'vs/platform/instantiation/common/instantiation';
 import { IKeybindingRule, IKeybindings, KeybindingsRegistry } from 'vs/platform/keybinding/common/keybindingsRegistry';
 import { ThemeIcon } from 'vs/platform/theme/common/themeService';
 
@@ -36,7 +36,7 @@ export interface ICommandActionTitle extends ILocalizedString {
 	mnemonicTitle?: string;
 }
 
-export type Icon = { dark?: URI; light?: URI; } | ThemeIcon;
+export type Icon = { dark?: URI; light?: URI } | ThemeIcon;
 
 export interface ICommandAction {
 	id: string;
@@ -47,7 +47,7 @@ export interface ICommandAction {
 	icon?: Icon;
 	source?: string;
 	precondition?: ContextKeyExpression;
-	toggled?: ContextKeyExpression | { condition: ContextKeyExpression, icon?: Icon, tooltip?: string, title?: string | ILocalizedString };
+	toggled?: ContextKeyExpression | { condition: ContextKeyExpression; icon?: Icon; tooltip?: string; title?: string | ILocalizedString };
 }
 
 export type ISerializableCommandAction = UriDto<ICommandAction>;
@@ -101,6 +101,7 @@ export class MenuId {
 	static readonly ExplorerContext = new MenuId('ExplorerContext');
 	static readonly ExtensionContext = new MenuId('ExtensionContext');
 	static readonly GlobalActivity = new MenuId('GlobalActivity');
+	static readonly LayoutControlMenu = new MenuId('LayoutControlMenu');
 	static readonly MenubarMainMenu = new MenuId('MenubarMainMenu');
 	static readonly MenubarAppearanceMenu = new MenuId('MenubarAppearanceMenu');
 	static readonly MenubarDebugMenu = new MenuId('MenubarDebugMenu');
@@ -111,6 +112,8 @@ export class MenuId {
 	static readonly MenubarHelpMenu = new MenuId('MenubarHelpMenu');
 	static readonly MenubarLayoutMenu = new MenuId('MenubarLayoutMenu');
 	static readonly MenubarNewBreakpointMenu = new MenuId('MenubarNewBreakpointMenu');
+	static readonly MenubarPanelAlignmentMenu = new MenuId('MenubarPanelAlignmentMenu');
+	static readonly MenubarPanelPositionMenu = new MenuId('MenubarPanelPositionMenu');
 	static readonly MenubarPreferencesMenu = new MenuId('MenubarPreferencesMenu');
 	static readonly MenubarRecentMenu = new MenuId('MenubarRecentMenu');
 	static readonly MenubarSelectionMenu = new MenuId('MenubarSelectionMenu');
@@ -162,6 +165,7 @@ export class MenuId {
 	static readonly NotebookCellBetween = new MenuId('NotebookCellBetween');
 	static readonly NotebookCellListTop = new MenuId('NotebookCellTop');
 	static readonly NotebookCellExecute = new MenuId('NotebookCellExecute');
+	static readonly NotebookCellExecutePrimary = new MenuId('NotebookCellExecutePrimary');
 	static readonly NotebookDiffCellInputTitle = new MenuId('NotebookDiffCellInputTitle');
 	static readonly NotebookDiffCellMetadataTitle = new MenuId('NotebookDiffCellMetadataTitle');
 	static readonly NotebookDiffCellOutputsTitle = new MenuId('NotebookDiffCellOutputsTitle');
@@ -230,7 +234,7 @@ export interface IMenuRegistry {
 	addCommand(userCommand: ICommandAction): IDisposable;
 	getCommand(id: string): ICommandAction | undefined;
 	getCommands(): ICommandsMap;
-	appendMenuItems(items: Iterable<{ id: MenuId, item: IMenuItem | ISubmenuItem }>): IDisposable;
+	appendMenuItems(items: Iterable<{ id: MenuId; item: IMenuItem | ISubmenuItem }>): IDisposable;
 	appendMenuItem(menu: MenuId, item: IMenuItem | ISubmenuItem): IDisposable;
 	getMenuItems(loc: MenuId): Array<IMenuItem | ISubmenuItem>;
 }
@@ -281,7 +285,7 @@ export const MenuRegistry: IMenuRegistry = new class implements IMenuRegistry {
 		return this.appendMenuItems(Iterable.single({ id, item }));
 	}
 
-	appendMenuItems(items: Iterable<{ id: MenuId, item: IMenuItem | ISubmenuItem }>): IDisposable {
+	appendMenuItems(items: Iterable<{ id: MenuId; item: IMenuItem | ISubmenuItem }>): IDisposable {
 
 		const changedIds = new Set<MenuId>();
 		const toRemove = new LinkedList<Function>();
@@ -343,21 +347,6 @@ export const MenuRegistry: IMenuRegistry = new class implements IMenuRegistry {
 	}
 };
 
-export class ExecuteCommandAction extends Action {
-
-	constructor(
-		id: string,
-		label: string,
-		@ICommandService private readonly _commandService: ICommandService) {
-
-		super(id, label);
-	}
-
-	override run(...args: any[]): Promise<void> {
-		return this._commandService.executeCommand(this.id, ...args);
-	}
-}
-
 export class SubmenuItemAction extends SubmenuAction {
 
 	constructor(
@@ -401,7 +390,7 @@ export class MenuItemAction implements IAction {
 	readonly tooltip: string;
 	readonly class: string | undefined;
 	readonly enabled: boolean;
-	readonly checked: boolean;
+	readonly checked?: boolean;
 
 	constructor(
 		item: ICommandAction,
@@ -416,11 +405,11 @@ export class MenuItemAction implements IAction {
 			: (typeof item.title === 'string' ? item.title : item.title.value);
 		this.tooltip = (typeof item.tooltip === 'string' ? item.tooltip : item.tooltip?.value) ?? '';
 		this.enabled = !item.precondition || contextKeyService.contextMatchesRules(item.precondition);
-		this.checked = false;
+		this.checked = undefined;
 
 		if (item.toggled) {
 			const toggled = ((item.toggled as { condition: ContextKeyExpression }).condition ? item.toggled : { condition: item.toggled }) as {
-				condition: ContextKeyExpression, icon?: Icon, tooltip?: string | ILocalizedString, title?: string | ILocalizedString
+				condition: ContextKeyExpression; icon?: Icon; tooltip?: string | ILocalizedString; title?: string | ILocalizedString;
 			};
 			this.checked = contextKeyService.contextMatchesRules(toggled.condition);
 			if (this.checked && toggled.tooltip) {
@@ -474,7 +463,7 @@ export class SyncActionDescriptor {
 	public static create<Services extends BrandedService[]>(ctor: { new(id: string, label: string, ...services: Services): Action },
 		id: string, label: string | undefined, keybindings?: IKeybindings, keybindingContext?: ContextKeyExpression, keybindingWeight?: number
 	): SyncActionDescriptor {
-		return new SyncActionDescriptor(ctor as IConstructorSignature2<string, string | undefined, Action>, id, label, keybindings, keybindingContext, keybindingWeight);
+		return new SyncActionDescriptor(ctor as IConstructorSignature<Action, [string, string | undefined]>, id, label, keybindings, keybindingContext, keybindingWeight);
 	}
 
 	public static from<Services extends BrandedService[]>(
@@ -488,7 +477,7 @@ export class SyncActionDescriptor {
 		return SyncActionDescriptor.create(ctor, ctor.ID, ctor.LABEL, keybindings, keybindingContext, keybindingWeight);
 	}
 
-	private constructor(ctor: IConstructorSignature2<string, string | undefined, Action>,
+	private constructor(ctor: IConstructorSignature<Action, [string, string | undefined]>,
 		id: string, label: string | undefined, keybindings?: IKeybindings, keybindingContext?: ContextKeyExpression, keybindingWeight?: number
 	) {
 		this._id = id;
@@ -496,7 +485,7 @@ export class SyncActionDescriptor {
 		this._keybindings = keybindings;
 		this._keybindingContext = keybindingContext;
 		this._keybindingWeight = keybindingWeight;
-		this._descriptor = new SyncDescriptor(ctor, [this._id, this._label]) as unknown as SyncDescriptor0<Action>;
+		this._descriptor = new SyncDescriptor(ctor, [this._id, this._label]);
 	}
 
 	public get syncDescriptor(): SyncDescriptor0<Action> {

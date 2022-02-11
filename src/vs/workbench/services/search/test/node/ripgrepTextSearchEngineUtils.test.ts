@@ -40,6 +40,12 @@ suite('RipgrepTextSearchEngine', () => {
 			['fo\\n+o', 'fo(?:\\r?\\n)+o'],
 			['fo[^\\n]o', 'fo(?!\\r?\\n)o'],
 			['fo[^\\na-z]o', 'fo(?!\\r?\\n|[a-z])o'],
+			['foo[^\\n]+o', 'foo.+o'],
+			['foo[^\\nzq]+o', 'foo[^zq]+o'],
+			['foo[^\\nzq]+o', 'foo[^zq]+o'],
+			// preserves quantifies, #137899
+			['fo[^\\S\\n]*o', 'fo[^\\S]*o'],
+			['fo[^\\S\\n]{3,}o', 'fo[^\\S]{3,}o'],
 		];
 
 		for (const [input, expected] of ttable) {
@@ -110,7 +116,7 @@ suite('RipgrepTextSearchEngine', () => {
 			assert.deepStrictEqual(actualResults, expectedResults);
 		}
 
-		function makeRgMatch(relativePath: string, text: string, lineNumber: number, matchRanges: { start: number, end: number }[]): string {
+		function makeRgMatch(relativePath: string, text: string, lineNumber: number, matchRanges: { start: number; end: number }[]): string {
 			return JSON.stringify(<IRgMessage>{
 				type: 'match',
 				data: <IRgMatch>{

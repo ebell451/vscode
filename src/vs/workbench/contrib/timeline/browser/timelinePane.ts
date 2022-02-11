@@ -478,7 +478,7 @@ export class TimelinePane extends ViewPane {
 	}
 
 	private async loadTimeline(reset: boolean, sources?: string[]) {
-		// If we have no source, we are reseting all sources, so cancel everything in flight and reset caches
+		// If we have no source, we are resetting all sources, so cancel everything in flight and reset caches
 		if (sources === undefined) {
 			if (reset) {
 				this.clear(true);
@@ -1244,7 +1244,7 @@ class TimelinePaneCommands extends Disposable {
 		return this.getActions(MenuId.TimelineItemContext, { key: 'timelineItem', value: element.contextValue }).secondary;
 	}
 
-	private getActions(menuId: MenuId, context: { key: string, value?: string }): { primary: IAction[]; secondary: IAction[]; } {
+	private getActions(menuId: MenuId, context: { key: string; value?: string }): { primary: IAction[]; secondary: IAction[] } {
 		const contextKeyService = this.contextKeyService.createOverlay([
 			['view', this.pane.id],
 			[context.key, context.value],
