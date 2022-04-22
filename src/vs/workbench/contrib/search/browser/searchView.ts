@@ -8,7 +8,6 @@ import { StandardKeyboardEvent } from 'vs/base/browser/keyboardEvent';
 import * as aria from 'vs/base/browser/ui/aria/aria';
 import { MessageType } from 'vs/base/browser/ui/inputbox/inputBox';
 import { IIdentityProvider } from 'vs/base/browser/ui/list/list';
-import { Orientation } from 'vs/base/browser/ui/sash/sash';
 import { ITreeContextMenuEvent, ITreeElement } from 'vs/base/browser/ui/tree/tree';
 import { IAction } from 'vs/base/common/actions';
 import { Delayer } from 'vs/base/common/async';
@@ -46,7 +45,7 @@ import { ServiceCollection } from 'vs/platform/instantiation/common/serviceColle
 import { IKeybindingService } from 'vs/platform/keybinding/common/keybinding';
 import { getSelectionKeyboardEvent, WorkbenchObjectTree } from 'vs/platform/list/browser/listService';
 import { INotificationService, } from 'vs/platform/notification/common/notification';
-import { IOpenerService, withSelectionFragment } from 'vs/platform/opener/common/opener';
+import { IOpenerService, withSelection } from 'vs/platform/opener/common/opener';
 import { IProgress, IProgressService, IProgressStep } from 'vs/platform/progress/common/progress';
 import { IStorageService, StorageScope, StorageTarget } from 'vs/platform/storage/common/storage';
 import { ITelemetryService } from 'vs/platform/telemetry/common/telemetry';
@@ -78,6 +77,7 @@ import { IPatternInfo, ISearchComplete, ISearchConfiguration, ISearchConfigurati
 import { TextSearchCompleteMessage } from 'vs/workbench/services/search/common/searchExtTypes';
 import { ITextFileService } from 'vs/workbench/services/textfile/common/textfiles';
 import { ResourceListDnDHandler } from 'vs/workbench/browser/dnd';
+import { isHighContrast } from 'vs/platform/theme/common/theme';
 
 const $ = dom.$;
 
@@ -730,7 +730,7 @@ export class SearchView extends ViewPane {
 						return element.resource;
 					}
 					if (element instanceof Match) {
-						return withSelectionFragment(element.parent().resource, element.range());
+						return withSelection(element.parent().resource, element.range());
 					}
 					return null;
 				}),
@@ -738,7 +738,8 @@ export class SearchView extends ViewPane {
 				selectionNavigation: true,
 				overrideStyles: {
 					listBackground: this.getBackgroundColor()
-				}
+				},
+				additionalScrollHeight: SearchDelegate.ITEM_HEIGHT
 			}));
 		this._register(this.tree.onContextMenu(e => this.onContextMenu(e)));
 		const updateHasSomeCollapsible = () => this.toggleCollapseStateDelayer.trigger(() => this.hasSomeCollapsibleResultKey.set(this.hasSomeCollapsible()));
@@ -1064,7 +1065,9 @@ export class SearchView extends ViewPane {
 		this.inputPatternExcludes.setWidth(this.size.width - 28 /* container margin */);
 		this.inputPatternIncludes.setWidth(this.size.width - 28 /* container margin */);
 
-		this.tree.layout(); // The tree will measure its container
+		const widgetHeight = dom.getTotalHeight(this.searchWidgetsContainerElement);
+		const messagesHeight = dom.getTotalHeight(this.messagesElement);
+		this.tree.layout(this.size.height - widgetHeight - messagesHeight, this.size.width - 28);
 	}
 
 	protected override layoutBody(height: number, width: number): void {
@@ -1281,7 +1284,7 @@ export class SearchView extends ViewPane {
 		}
 
 		if (!skipLayout && this.size) {
-			this.layout(this._orientation === Orientation.VERTICAL ? this.size.height : this.size.width);
+			this.reLayout();
 		}
 	}
 
@@ -1928,17 +1931,17 @@ registerThemingParticipant((theme: IColorTheme, collector: ICssStyleCollector) =
 
 	const diffInsertedOutlineColor = theme.getColor(diffInsertedOutline);
 	if (diffInsertedOutlineColor) {
-		collector.addRule(`.monaco-workbench .search-view .replaceMatch:not(:empty) { border: 1px ${theme.type === 'hc' ? 'dashed' : 'solid'} ${diffInsertedOutlineColor}; }`);
+		collector.addRule(`.monaco-workbench .search-view .replaceMatch:not(:empty) { border: 1px ${isHighContrast(theme.type) ? 'dashed' : 'solid'} ${diffInsertedOutlineColor}; }`);
 	}
 
 	const diffRemovedOutlineColor = theme.getColor(diffRemovedOutline);
 	if (diffRemovedOutlineColor) {
-		collector.addRule(`.monaco-workbench .search-view .replace.findInFileMatch { border: 1px ${theme.type === 'hc' ? 'dashed' : 'solid'} ${diffRemovedOutlineColor}; }`);
+		collector.addRule(`.monaco-workbench .search-view .replace.findInFileMatch { border: 1px ${isHighContrast(theme.type) ? 'dashed' : 'solid'} ${diffRemovedOutlineColor}; }`);
 	}
 
 	const findMatchHighlightBorder = theme.getColor(editorFindMatchHighlightBorder);
 	if (findMatchHighlightBorder) {
-		collector.addRule(`.monaco-workbench .search-view .findInFileMatch { border: 1px ${theme.type === 'hc' ? 'dashed' : 'solid'} ${findMatchHighlightBorder}; }`);
+		collector.addRule(`.monaco-workbench .search-view .findInFileMatch { border: 1px ${isHighContrast(theme.type) ? 'dashed' : 'solid'} ${findMatchHighlightBorder}; }`);
 	}
 
 	const outlineSelectionColor = theme.getColor(listActiveSelectionForeground);

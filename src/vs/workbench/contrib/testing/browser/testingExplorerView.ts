@@ -53,13 +53,12 @@ import { ByNameTestItemElement, HierarchicalByNameProjection } from 'vs/workbenc
 import { ITestTreeProjection, TestExplorerTreeElement, TestItemTreeElement, TestTreeErrorMessage } from 'vs/workbench/contrib/testing/browser/explorerProjections/index';
 import { getTestItemContextOverlay } from 'vs/workbench/contrib/testing/browser/explorerProjections/testItemContextOverlay';
 import * as icons from 'vs/workbench/contrib/testing/browser/icons';
-import { ConfigureTestProfilesAction, DebugSelectedAction, RunSelectedAction, SelectDefaultTestProfiles } from 'vs/workbench/contrib/testing/browser/testExplorerActions';
 import { TestingExplorerFilter } from 'vs/workbench/contrib/testing/browser/testingExplorerFilter';
 import { ITestingProgressUiService } from 'vs/workbench/contrib/testing/browser/testingProgressUiService';
 import { getTestingConfiguration, TestingConfigKeys } from 'vs/workbench/contrib/testing/common/configuration';
-import { labelForTestInState, TestExplorerViewMode, TestExplorerViewSorting, Testing, testStateNames } from 'vs/workbench/contrib/testing/common/constants';
+import { labelForTestInState, TestCommandId, TestExplorerViewMode, TestExplorerViewSorting, Testing } from 'vs/workbench/contrib/testing/common/constants';
 import { StoredValue } from 'vs/workbench/contrib/testing/common/storedValue';
-import { InternalTestItem, ITestRunProfile, TestItemExpandState, TestResultState, TestRunProfileBitset } from 'vs/workbench/contrib/testing/common/testCollection';
+import { InternalTestItem, ITestRunProfile, TestItemExpandState, TestResultState, TestRunProfileBitset } from 'vs/workbench/contrib/testing/common/testTypes';
 import { ITestExplorerFilterState, TestExplorerFilterState, TestFilterTerm } from 'vs/workbench/contrib/testing/common/testExplorerFilterState';
 import { TestId } from 'vs/workbench/contrib/testing/common/testId';
 import { TestingContextKeys } from 'vs/workbench/contrib/testing/common/testingContextKeys';
@@ -236,11 +235,11 @@ export class TestingExplorerView extends ViewPane {
 	/** @override  */
 	public override getActionViewItem(action: IAction): IActionViewItem | undefined {
 		switch (action.id) {
-			case Testing.FilterActionId:
+			case TestCommandId.FilterAction:
 				return this.filter = this.instantiationService.createInstance(TestingExplorerFilter, action);
-			case RunSelectedAction.ID:
+			case TestCommandId.RunSelectedAction:
 				return this.getRunGroupDropdown(TestRunProfileBitset.Run, action);
-			case DebugSelectedAction.ID:
+			case TestCommandId.DebugSelectedAction:
 				return this.getRunGroupDropdown(TestRunProfileBitset.Debug, action);
 			default:
 				return super.getActionViewItem(action);
@@ -302,7 +301,7 @@ export class TestingExplorerView extends ViewPane {
 				localize('selectDefaultConfigs', 'Select Default Profile'),
 				undefined,
 				undefined,
-				() => this.commandService.executeCommand<ITestRunProfile>(SelectDefaultTestProfiles.ID, group),
+				() => this.commandService.executeCommand<ITestRunProfile>(TestCommandId.SelectDefaultTestProfiles, group),
 			));
 		}
 
@@ -312,7 +311,7 @@ export class TestingExplorerView extends ViewPane {
 				localize('configureTestProfiles', 'Configure Test Profiles'),
 				undefined,
 				undefined,
-				() => this.commandService.executeCommand<ITestRunProfile>(ConfigureTestProfilesAction.ID, group),
+				() => this.commandService.executeCommand<ITestRunProfile>(TestCommandId.ConfigureTestProfilesAction, group),
 			));
 		}
 
@@ -357,7 +356,7 @@ export class TestingExplorerView extends ViewPane {
 			actionViewItemProvider: action => this.getActionViewItem(action),
 			triggerKeys: { keyDown: false, keys: [] },
 		});
-		bar.push(new Action(Testing.FilterActionId));
+		bar.push(new Action(TestCommandId.FilterAction));
 		bar.getContainer().classList.add('testing-filter-action-bar');
 		return bar;
 	}
@@ -514,6 +513,7 @@ export class TestingExplorerViewModel extends Disposable {
 
 		this._register(Event.any(
 			filterState.text.onDidChange,
+			filterState.fuzzy.onDidChange,
 			testService.excluded.onTestExclusionsChanged,
 		)(this.tree.refilter, this.tree));
 
@@ -594,7 +594,9 @@ export class TestingExplorerViewModel extends Disposable {
 
 		this._register(this.storageService.onWillSaveState(({ reason }) => {
 			if (reason === WillSaveStateReason.SHUTDOWN) {
-				this.lastViewState.store(this.tree.getViewState());
+				this.lastViewState.store(this.tree.getViewState({
+					getId: e => e instanceof TestItemTreeElement ? e.test.item.extId : '',
+				}));
 			}
 		}));
 
@@ -710,11 +712,7 @@ export class TestingExplorerViewModel extends Disposable {
 		const actions = getActionableElementActions(this.contextKeyService, this.menuService, this.testService, this.testProfileService, element);
 		this.contextMenuService.showContextMenu({
 			getAnchor: () => evt.anchor,
-			getActions: () => [
-				...actions.value.primary,
-				new Separator(),
-				...actions.value.secondary,
-			],
+			getActions: () => actions.value.secondary,
 			getActionsContext: () => element,
 			onHide: () => actions.dispose(),
 			actionRunner: this.actionRunner,
@@ -914,13 +912,14 @@ class TestsFilter implements ITreeFilter<TestExplorerTreeElement> {
 			return FilterResult.Include;
 		}
 
+		const fuzzy = this.state.fuzzy.value;
 		for (let e: TestItemTreeElement | null = element; e; e = e.parent) {
 			// start as included if the first glob is a negation
 			let included = this.state.globList[0].include === false ? FilterResult.Include : FilterResult.Inherit;
 			const data = e.label.toLowerCase();
 
 			for (const { include, text } of this.state.globList) {
-				if (fuzzyContains(data, text)) {
+				if (fuzzy ? fuzzyContains(data, text) : data.includes(text)) {
 					included = include ? FilterResult.Include : FilterResult.Exclude;
 				}
 			}
@@ -1013,13 +1012,6 @@ const getLabelForTestTreeElement = (element: TestItemTreeElement) => {
 				key: 'testing.treeElementLabelDuration',
 				comment: ['{0} is the original label in testing.treeElementLabel, {1} is a duration'],
 			}, '{0}, in {1}', label, formatDuration(element.duration));
-		}
-
-		if (element.retired) {
-			label = localize({
-				key: 'testing.treeElementLabelOutdated',
-				comment: ['{0} is the original label in testing.treeElementLabel'],
-			}, '{0}, outdated result', label, testStateNames[element.state]);
 		}
 	}
 
@@ -1213,10 +1205,6 @@ class TestItemRenderer extends ActionableItemTemplateData<TestItemTreeElement> {
 				: node.element.state);
 
 		data.icon.className = 'computed-state ' + (icon ? ThemeIcon.asClassName(icon) : '');
-		if (node.element.retired) {
-			data.icon.className += ' retired';
-		}
-
 		label.resource = node.element.test.item.uri;
 		options.title = getLabelForTestTreeElement(node.element);
 		options.fileKind = FileKind.FILE;

@@ -8,14 +8,14 @@ import { IDisposable } from 'vs/base/common/lifecycle';
 import { URI } from 'vs/base/common/uri';
 import { FindReplaceState } from 'vs/editor/contrib/find/browser/findState';
 import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
-import { IShellLaunchConfig, ITerminalDimensions, ITerminalLaunchError, ITerminalProfile, ITerminalTabLayoutInfoById, TerminalIcon, TitleEventSource, TerminalShellType, IExtensionTerminalProfile, TerminalLocation, ProcessPropertyType, IProcessPropertyMap } from 'vs/platform/terminal/common/terminal';
-import { INavigationMode, IRemoteTerminalAttachTarget, IStartExtensionTerminalRequest, ITerminalConfigHelper, ITerminalFont, ITerminalBackend, ITerminalProcessExtHostProxy, IRegisterContributedProfileArgs, IShellIntegration } from 'vs/workbench/contrib/terminal/common/terminal';
+import { IShellLaunchConfig, ITerminalDimensions, ITerminalLaunchError, ITerminalProfile, ITerminalTabLayoutInfoById, TerminalIcon, TitleEventSource, TerminalShellType, IExtensionTerminalProfile, TerminalLocation, ProcessPropertyType, IProcessPropertyMap, IShellIntegration } from 'vs/platform/terminal/common/terminal';
+import { INavigationMode, IRemoteTerminalAttachTarget, IStartExtensionTerminalRequest, ITerminalConfigHelper, ITerminalFont, ITerminalBackend, ITerminalProcessExtHostProxy, IRegisterContributedProfileArgs } from 'vs/workbench/contrib/terminal/common/terminal';
 import { ITerminalStatusList } from 'vs/workbench/contrib/terminal/browser/terminalStatusList';
 import { Orientation } from 'vs/base/browser/ui/splitview/splitview';
 import { IEditableData } from 'vs/workbench/common/views';
 import { EditorGroupColumn } from 'vs/workbench/services/editor/common/editorGroupColumn';
 import { IKeyMods } from 'vs/platform/quickinput/common/quickInput';
-import { ITerminalCapabilityStore } from 'vs/workbench/contrib/terminal/common/capabilities/capabilities';
+import { ITerminalCapabilityStore, ITerminalCommand } from 'vs/platform/terminal/common/capabilities/capabilities';
 import { IWorkspaceFolder } from 'vs/platform/workspace/common/workspace';
 import { EditorInput } from 'vs/workbench/common/editor/editorInput';
 
@@ -146,6 +146,7 @@ export interface ITerminalService extends ITerminalInstanceHost {
 	onDidInputInstanceData: Event<ITerminalInstance>;
 	onDidRegisterProcessSupport: Event<void>;
 	onDidChangeConnectionState: Event<void>;
+	onDidRequestHideFindWidget: Event<void>;
 
 	/**
 	 * Creates a terminal.
@@ -304,7 +305,8 @@ export interface ITerminalGroupService extends ITerminalInstanceHost, ITerminalF
 	readonly onDidDisposeGroup: Event<ITerminalGroup>;
 	/** Fires when a group is created, disposed of, or shown (in the case of a background group). */
 	readonly onDidChangeGroups: Event<void>;
-
+	/** Fires when the panel has been shown and expanded, so has non-zero dimensions. */
+	readonly onDidShow: Event<void>;
 	readonly onDidChangePanelOrientation: Event<Orientation>;
 
 	createGroup(shellLaunchConfig?: IShellLaunchConfig): ITerminalGroup;
@@ -472,6 +474,11 @@ export interface ITerminalInstance {
 	 */
 	readonly isDisconnected: boolean;
 
+	/*
+	 * Whether this terminal has been disposed of
+	 */
+	readonly isDisposed: boolean;
+
 	/**
 	 * Whether the terminal's pty is hosted on a remote.
 	 */
@@ -547,6 +554,8 @@ export interface ITerminalInstance {
 	 * the ITerminalInstance being disposed.
 	 */
 	onExit: Event<number | ITerminalLaunchError | undefined>;
+
+	onDidChangeFindResults: Event<{ resultIndex: number; resultCount: number } | undefined>;
 
 	readonly exitCode: number | undefined;
 
@@ -643,7 +652,7 @@ export interface ITerminalInstance {
 	/**
 	 * Copies the terminal selection to the clipboard.
 	 */
-	copySelection(): Promise<void>;
+	copySelection(asHtml?: boolean, command?: ITerminalCommand): Promise<void>;
 
 	/**
 	 * Current selection in the terminal.
@@ -831,7 +840,7 @@ export interface ITerminalInstance {
 
 	/**
 	 * Triggers a quick pick that displays recent commands or cwds. Selecting one will
-	 * re-run it in the active terminal.
+	 * rerun it in the active terminal.
 	 */
 	runRecent(type: 'command' | 'cwd'): Promise<void>;
 
@@ -857,6 +866,8 @@ export interface IXtermTerminal {
 	 * The position of the terminal.
 	 */
 	target?: TerminalLocation;
+
+	findResult?: { resultIndex: number; resultCount: number };
 
 	/**
 	 * Find the next instance of the term
@@ -890,6 +901,16 @@ export interface IXtermTerminal {
 	 * viewport.
 	 */
 	clearBuffer(): void;
+
+	/**
+	 * Clears decorations - for example, when shell integration is disabled.
+	 */
+	clearDecorations(): void;
+
+	/**
+	 * Clears the search result decorations
+	 */
+	clearSearchDecorations(): void;
 }
 
 export interface IRequestAddInstanceToGroupEvent {
@@ -901,4 +922,8 @@ export const enum LinuxDistro {
 	Unknown = 1,
 	Fedora = 2,
 	Ubuntu = 3,
+}
+
+export const enum TerminalDataTransfers {
+	Terminals = 'Terminals'
 }

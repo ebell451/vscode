@@ -89,16 +89,6 @@ async function webviewPreloads(ctx: PreloadContext) {
 		}
 
 		for (const node of event.composedPath()) {
-			if (node instanceof HTMLElement && node.classList.contains('output')) {
-				// output
-				postNotebookMessage<webviewMessages.IOutputFocusMessage>('outputFocus', {
-					id: node.id,
-				});
-				break;
-			}
-		}
-
-		for (const node of event.composedPath()) {
 			if (node instanceof HTMLAnchorElement && node.href) {
 				if (node.href.startsWith('blob:')) {
 					handleBlobUrlClick(node.href, node.download);
@@ -411,6 +401,17 @@ async function webviewPreloads(ctx: PreloadContext) {
 		});
 	}
 
+	function isAncestor(testChild: Node | null, testAncestor: Node | null): boolean {
+		while (testChild) {
+			if (testChild === testAncestor) {
+				return true;
+			}
+			testChild = testChild.parentNode;
+		}
+
+		return false;
+	}
+
 	function _internalHighlightRange(range: Range, tagName = 'mark', attributes = {}) {
 		// derived from https://github.com/Treora/dom-highlight-range/blob/master/highlight-range.js
 
@@ -634,6 +635,64 @@ async function webviewPreloads(ctx: PreloadContext) {
 		}
 	}
 
+	class OutputFocusTracker {
+		private _outputId: string;
+		private _hasFocus: boolean = false;
+		private _loosingFocus: boolean = false;
+		private _element: HTMLElement | Window;
+		constructor(element: HTMLElement | Window, outputId: string) {
+			this._element = element;
+			this._outputId = outputId;
+			this._hasFocus = isAncestor(document.activeElement, <HTMLElement>element);
+			this._loosingFocus = false;
+
+			element.addEventListener('focus', this._onFocus.bind(this), true);
+			element.addEventListener('blur', this._onBlur.bind(this), true);
+		}
+
+		private _onFocus() {
+			this._loosingFocus = false;
+			if (!this._hasFocus) {
+				this._hasFocus = true;
+				postNotebookMessage<webviewMessages.IOutputFocusMessage>('outputFocus', {
+					id: this._outputId,
+				});
+			}
+		}
+
+		private _onBlur() {
+			if (this._hasFocus) {
+				this._loosingFocus = true;
+				window.setTimeout(() => {
+					if (this._loosingFocus) {
+						this._loosingFocus = false;
+						this._hasFocus = false;
+						postNotebookMessage<webviewMessages.IOutputBlurMessage>('outputBlur', {
+							id: this._outputId,
+						});
+					}
+				}, 0);
+			}
+		}
+
+		dispose() {
+			if (this._element) {
+				this._element.removeEventListener('focus', this._onFocus, true);
+				this._element.removeEventListener('blur', this._onBlur, true);
+			}
+		}
+	}
+
+	const outputFocusTrackers = new Map<string, OutputFocusTracker>();
+
+	function addOutputFocusTracker(element: HTMLElement, outputId: string): void {
+		if (outputFocusTrackers.has(outputId)) {
+			outputFocusTrackers.get(outputId)?.dispose();
+		}
+
+		outputFocusTrackers.set(outputId, new OutputFocusTracker(element, outputId));
+	}
+
 	function createEmitter<T>(listenerChange: (listeners: Set<Listener<T>>) => void = () => undefined): EmitterLike<T> {
 		const listeners = new Set<Listener<T>>();
 		return {
@@ -679,14 +738,12 @@ async function webviewPreloads(ctx: PreloadContext) {
 
 	function createOutputItem(
 		id: string,
-		element: HTMLElement,
 		mime: string,
 		metadata: unknown,
 		valueBytes: Uint8Array
 	): rendererApi.OutputItem {
-		return Object.freeze(<rendererApi.OutputItem>{
+		return Object.freeze<rendererApi.OutputItem>({
 			id,
-			element,
 			mime,
 			metadata,
 
@@ -1062,6 +1119,11 @@ async function webviewPreloads(ctx: PreloadContext) {
 				renderers.clearAll();
 				viewModel.clearAll();
 				document.getElementById('container')!.innerText = '';
+
+				outputFocusTrackers.forEach(ft => {
+					ft.dispose();
+				});
+				outputFocusTrackers.clear();
 				break;
 
 			case 'clearOutput': {
@@ -1078,9 +1140,12 @@ async function webviewPreloads(ctx: PreloadContext) {
 				break;
 			}
 			case 'showOutput': {
-				const { outputId, cellTop, cellId } = event.data;
+				const { outputId, cellTop, cellId, content } = event.data;
 				outputRunner.enqueue(outputId, () => {
 					viewModel.showOutput(cellId, outputId, cellTop);
+					if (content) {
+						viewModel.updateAndRerender(cellId, outputId, content);
+					}
 				});
 				break;
 			}
@@ -1145,7 +1210,7 @@ async function webviewPreloads(ctx: PreloadContext) {
 			}
 			case 'tokenizedCodeBlock': {
 				const { codeBlockId, html } = event.data;
-				MarkupCell.highlightCodeBlock(codeBlockId, html);
+				MarkdownCodeBlock.highlightCodeBlock(codeBlockId, html);
 				break;
 			}
 			case 'tokenizedStylesChanged': {
@@ -1544,6 +1609,11 @@ async function webviewPreloads(ctx: PreloadContext) {
 			cell?.show(outputId, top);
 		}
 
+		public updateAndRerender(cellId: string, outputId: string, content: webviewMessages.ICreationContent) {
+			const cell = this._outputCells.get(cellId);
+			cell?.updateContentAndRerender(outputId, content);
+		}
+
 		public hideOutput(cellId: string) {
 			const cell = this._outputCells.get(cellId);
 			cell?.hide();
@@ -1562,12 +1632,11 @@ async function webviewPreloads(ctx: PreloadContext) {
 		}
 	}();
 
-	class MarkupCell {
-
+	class MarkdownCodeBlock {
 		private static pendingCodeBlocksToHighlight = new Map<string, HTMLElement>();
 
 		public static highlightCodeBlock(id: string, html: string) {
-			const el = MarkupCell.pendingCodeBlocksToHighlight.get(id);
+			const el = MarkdownCodeBlock.pendingCodeBlocksToHighlight.get(id);
 			if (!el) {
 				return;
 			}
@@ -1577,6 +1646,24 @@ async function webviewPreloads(ctx: PreloadContext) {
 				el.insertAdjacentElement('beforebegin', tokenizationStyleElement.cloneNode(true) as HTMLElement);
 			}
 		}
+
+		public static requestHighlightCodeBlock(root: HTMLElement | ShadowRoot) {
+			const codeBlocks: Array<{ value: string; lang: string; id: string }> = [];
+			let i = 0;
+			for (const el of root.querySelectorAll('.vscode-code-block')) {
+				const lang = el.getAttribute('data-vscode-code-block-lang');
+				if (el.textContent && lang) {
+					const id = `${Date.now()}-${i++}`;
+					codeBlocks.push({ value: el.textContent, lang: lang, id });
+					MarkdownCodeBlock.pendingCodeBlocksToHighlight.set(id, el as HTMLElement);
+				}
+			}
+
+			return codeBlocks;
+		}
+	}
+
+	class MarkupCell {
 
 		public readonly ready: Promise<void>;
 
@@ -1712,16 +1799,7 @@ async function webviewPreloads(ctx: PreloadContext) {
 				}
 			}
 
-			const codeBlocks: Array<{ value: string; lang: string; id: string }> = [];
-			let i = 0;
-			for (const el of root.querySelectorAll('.vscode-code-block')) {
-				const lang = el.getAttribute('data-vscode-code-block-lang');
-				if (el.textContent && lang) {
-					const id = `${Date.now()}-${i++}`;
-					codeBlocks.push({ value: el.textContent, lang: lang, id });
-					MarkupCell.pendingCodeBlocksToHighlight.set(id, el as HTMLElement);
-				}
-			}
+			const codeBlocks: Array<{ value: string; lang: string; id: string }> = MarkdownCodeBlock.requestHighlightCodeBlock(root);
 
 			postNotebookMessage<webviewMessages.IRenderedMarkupMessage>('renderedMarkup', {
 				cellId: this.id,
@@ -1841,6 +1919,10 @@ async function webviewPreloads(ctx: PreloadContext) {
 			this.element.style.visibility = 'hidden';
 		}
 
+		public updateContentAndRerender(outputId: string, content: webviewMessages.ICreationContent) {
+			this.outputElements.get(outputId)?.updateContentAndRender(content);
+		}
+
 		public rerender() {
 			for (const outputElement of this.outputElements.values()) {
 				outputElement.rerender();
@@ -1906,6 +1988,10 @@ async function webviewPreloads(ctx: PreloadContext) {
 		public rerender() {
 			this._outputNode?.rerender();
 		}
+
+		public updateContentAndRender(content: webviewMessages.ICreationContent) {
+			this._outputNode?.updateAndRerender(content);
+		}
 	}
 
 	vscode.postMessage({
@@ -1925,7 +2011,6 @@ async function webviewPreloads(ctx: PreloadContext) {
 	}
 
 	class OutputElement {
-
 		public readonly element: HTMLElement;
 
 		private _content?: { content: webviewMessages.ICreationContent; preloadsAndErrors: unknown[] };
@@ -1944,6 +2029,7 @@ async function webviewPreloads(ctx: PreloadContext) {
 			this.element.style.padding = '0px';
 
 			addMouseoverListeners(this.element, outputId);
+			addOutputFocusTracker(this.element, outputId);
 		}
 
 
@@ -1959,7 +2045,7 @@ async function webviewPreloads(ctx: PreloadContext) {
 			} else {
 				const rendererApi = preloadsAndErrors[0] as rendererApi.RendererApi;
 				try {
-					rendererApi.renderOutputItem(createOutputItem(this.outputId, this.element, content.mimeType, content.metadata, content.valueBytes), this.element);
+					rendererApi.renderOutputItem(createOutputItem(this.outputId, content.mimeType, content.metadata, content.valueBytes), this.element);
 				} catch (e) {
 					showPreloadErrors(this.element, e);
 				}
@@ -1987,10 +2073,26 @@ async function webviewPreloads(ctx: PreloadContext) {
 					init: true,
 				});
 			}
+
+			const root = this.element.shadowRoot ?? this.element;
+			const codeBlocks: Array<{ value: string; lang: string; id: string }> = MarkdownCodeBlock.requestHighlightCodeBlock(root);
+
+			if (codeBlocks.length > 0) {
+				postNotebookMessage<webviewMessages.IRenderedCellOutputMessage>('renderedCellOutput', {
+					codeBlocks
+				});
+			}
 		}
 
 		public rerender() {
 			if (this._content) {
+				this.render(this._content.content, this._content.preloadsAndErrors);
+			}
+		}
+
+		public updateAndRerender(content: webviewMessages.ICreationContent) {
+			if (this._content) {
+				this._content.content = content;
 				this.render(this._content.content, this._content.preloadsAndErrors);
 			}
 		}

@@ -12,6 +12,7 @@ import { extname as resourceExtname, basenameOrAuthority, joinPath, extUriBiased
 import { URI, UriComponents } from 'vs/base/common/uri';
 import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
 import { IEnvironmentService } from 'vs/platform/environment/common/environment';
+import { Schemas } from 'vs/base/common/network';
 
 export const IWorkspaceContextService = createDecorator<IWorkspaceContextService>('contextService');
 
@@ -294,7 +295,7 @@ export function isWorkspaceFolder(thing: unknown): thing is IWorkspaceFolder {
 
 export class Workspace implements IWorkspace {
 
-	private _foldersMap: TernarySearchTree<URI, WorkspaceFolder> = TernarySearchTree.forUris<WorkspaceFolder>(this._ignorePathCasing);
+	private _foldersMap: TernarySearchTree<URI, WorkspaceFolder> = TernarySearchTree.forUris<WorkspaceFolder>(this._ignorePathCasing, () => true);
 	private _folders!: WorkspaceFolder[];
 
 	constructor(
@@ -353,7 +354,7 @@ export class Workspace implements IWorkspace {
 	}
 
 	private updateFoldersMap(): void {
-		this._foldersMap = TernarySearchTree.forUris<WorkspaceFolder>(this._ignorePathCasing);
+		this._foldersMap = TernarySearchTree.forUris<WorkspaceFolder>(this._ignorePathCasing, () => true);
 		for (const folder of this.folders) {
 			this._foldersMap.set(folder.uri, folder);
 		}
@@ -416,6 +417,23 @@ export const UNTITLED_WORKSPACE_NAME = 'workspace.json';
 
 export function isUntitledWorkspace(path: URI, environmentService: IEnvironmentService): boolean {
 	return extUriBiasedIgnorePathCase.isEqualOrParent(path, environmentService.untitledWorkspacesHome);
+}
+
+export function isTemporaryWorkspace(workspace: IWorkspace): boolean;
+export function isTemporaryWorkspace(path: URI): boolean;
+export function isTemporaryWorkspace(arg1: IWorkspace | URI): boolean {
+	let path: URI | null | undefined;
+	if (URI.isUri(arg1)) {
+		path = arg1;
+	} else {
+		path = arg1.configuration;
+	}
+
+	return path?.scheme === Schemas.tmp;
+}
+
+export function isSavedWorkspace(path: URI, environmentService: IEnvironmentService): boolean {
+	return !isUntitledWorkspace(path, environmentService) && !isTemporaryWorkspace(path);
 }
 
 export function hasWorkspaceFileExtension(path: string | URI) {

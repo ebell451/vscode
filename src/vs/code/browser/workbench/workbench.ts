@@ -13,7 +13,7 @@ import { isEqual } from 'vs/base/common/resources';
 import { URI, UriComponents } from 'vs/base/common/uri';
 import { request } from 'vs/base/parts/request/browser/request';
 import product from 'vs/platform/product/common/product';
-import { isFolderToOpen, isWorkspaceToOpen } from 'vs/platform/windows/common/windows';
+import { isFolderToOpen, isWorkspaceToOpen } from 'vs/platform/window/common/window';
 import { create, ICredentialsProvider, IURLCallbackProvider, IWorkbenchConstructionOptions, IWorkspace, IWorkspaceProvider } from 'vs/workbench/workbench.web.main';
 import { posix } from 'vs/base/common/path';
 import { ltrim } from 'vs/base/common/strings';
@@ -341,8 +341,7 @@ class WorkspaceProvider implements IWorkspaceProvider {
 		});
 
 		// If no workspace is provided through the URL, check for config
-		// attribute from server and fallback to last opened workspace
-		// from storage
+		// attribute from server
 		if (!foundWorkspace) {
 			if (config.folderUri) {
 				workspace = { folderUri: URI.revive(config.folderUri) };
@@ -375,7 +374,7 @@ class WorkspaceProvider implements IWorkspaceProvider {
 				return true;
 			} else {
 				let result;
-				if (isStandalone) {
+				if (isStandalone()) {
 					result = window.open(targetHref, '_blank', 'toolbar=no'); // ensures to open another 'standalone' window!
 				} else {
 					result = window.open(targetHref);

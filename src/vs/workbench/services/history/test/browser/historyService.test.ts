@@ -14,7 +14,7 @@ import { EditorNavigationStack, HistoryService } from 'vs/workbench/services/his
 import { IEditorService, SIDE_GROUP } from 'vs/workbench/services/editor/common/editorService';
 import { EditorService } from 'vs/workbench/services/editor/browser/editorService';
 import { DisposableStore } from 'vs/base/common/lifecycle';
-import { GoFilter, IHistoryService } from 'vs/workbench/services/history/common/history';
+import { GoFilter, GoScope, IHistoryService } from 'vs/workbench/services/history/common/history';
 import { DeferredPromise, timeout } from 'vs/base/common/async';
 import { Event } from 'vs/base/common/event';
 import { EditorPaneSelectionChangeReason, isResourceEditorInput, IUntypedEditorInput } from 'vs/workbench/common/editor';
@@ -26,13 +26,15 @@ import { FileChangesEvent, FileChangeType, FileOperation, FileOperationEvent } f
 import { isLinux } from 'vs/base/common/platform';
 import { Selection } from 'vs/editor/common/core/selection';
 import { EditorPane } from 'vs/workbench/browser/parts/editor/editorPane';
+import { TestConfigurationService } from 'vs/platform/configuration/test/common/testConfigurationService';
+import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
 
 suite('HistoryService', function () {
 
 	const TEST_EDITOR_ID = 'MyTestEditorForEditorHistory';
 	const TEST_EDITOR_INPUT_ID = 'testEditorInputForHistoyService';
 
-	async function createServices(): Promise<[EditorPart, HistoryService, EditorService, ITextFileService, IInstantiationService]> {
+	async function createServices(scope = GoScope.DEFAULT): Promise<[EditorPart, HistoryService, EditorService, ITextFileService, IInstantiationService]> {
 		const instantiationService = workbenchInstantiationService(undefined, disposables);
 
 		const part = await createEditorPart(instantiationService, disposables);
@@ -40,6 +42,14 @@ suite('HistoryService', function () {
 
 		const editorService = instantiationService.createInstance(EditorService);
 		instantiationService.stub(IEditorService, editorService);
+
+		const configurationService = new TestConfigurationService();
+		if (scope === GoScope.EDITOR_GROUP) {
+			configurationService.setUserConfiguration('workbench.editor.navigationScope', 'editorGroup');
+		} else if (scope === GoScope.EDITOR) {
+			configurationService.setUserConfiguration('workbench.editor.navigationScope', 'editor');
+		}
+		instantiationService.stub(IConfigurationService, configurationService);
 
 		const historyService = instantiationService.createInstance(HistoryService);
 		instantiationService.stub(IHistoryService, historyService);
@@ -214,6 +224,24 @@ suite('HistoryService', function () {
 		assertTextSelection(new Selection(120, 8, 120, 18), pane);
 	});
 
+	test('back / forward: selection changes with JUMP or NAVIGATION source are not merged (#143833)', async function () {
+		const [, historyService, editorService] = await createServices();
+
+		const resource = toResource.call(this, '/path/index.txt');
+
+		const pane = await editorService.openEditor({ resource, options: { pinned: true } }) as TestTextFileEditor;
+
+		await setTextSelection(historyService, pane, new Selection(2, 2, 2, 10), EditorPaneSelectionChangeReason.USER);
+		await setTextSelection(historyService, pane, new Selection(5, 3, 5, 20), EditorPaneSelectionChangeReason.JUMP);
+		await setTextSelection(historyService, pane, new Selection(6, 3, 6, 20), EditorPaneSelectionChangeReason.NAVIGATION);
+
+		await historyService.goBack(GoFilter.NONE);
+		assertTextSelection(new Selection(5, 3, 5, 20), pane);
+
+		await historyService.goBack(GoFilter.NONE);
+		assertTextSelection(new Selection(2, 2, 2, 10), pane);
+	});
+
 	test('back / forward: edit selection changes', async function () {
 		const [, historyService, editorService] = await createServices();
 
@@ -314,7 +342,7 @@ suite('HistoryService', function () {
 	test('back / forward: editor navigation stack - navigation', async function () {
 		const [, , editorService, , instantiationService] = await createServices();
 
-		const stack = instantiationService.createInstance(EditorNavigationStack, GoFilter.NONE);
+		const stack = instantiationService.createInstance(EditorNavigationStack, GoFilter.NONE, GoScope.DEFAULT);
 
 		const resource = toResource.call(this, '/path/index.txt');
 		const otherResource = toResource.call(this, '/path/index.html');
@@ -377,7 +405,7 @@ suite('HistoryService', function () {
 	test('back / forward: editor navigation stack - mutations', async function () {
 		const [, , editorService, , instantiationService] = await createServices();
 
-		const stack = instantiationService.createInstance(EditorNavigationStack, GoFilter.NONE);
+		const stack = instantiationService.createInstance(EditorNavigationStack, GoFilter.NONE, GoScope.DEFAULT);
 
 		const resource = toResource.call(this, '/path/index.txt');
 		const otherResource = toResource.call(this, '/path/index.html');
@@ -453,12 +481,90 @@ suite('HistoryService', function () {
 			name: 'other.txt',
 			readonly: false,
 			size: 0,
-			resource: toResource.call(this, '/path/other.txt')
+			resource: toResource.call(this, '/path/other.txt'),
+			children: undefined
 		};
 		stack.move(new FileOperationEvent(resource, FileOperation.MOVE, stat));
 		await stack.goBack();
 		assert.strictEqual(pane?.input?.resource?.toString(), stat.resource.toString());
 	});
+
+	test('back / forward: editor group scope', async function () {
+		const [part, historyService, editorService] = await createServices(GoScope.EDITOR_GROUP);
+
+		const resource1 = toResource.call(this, '/path/one.txt');
+		const resource2 = toResource.call(this, '/path/two.html');
+		const resource3 = toResource.call(this, '/path/three.html');
+
+		const pane1 = await editorService.openEditor({ resource: resource1, options: { pinned: true } });
+		await editorService.openEditor({ resource: resource2, options: { pinned: true } });
+		await editorService.openEditor({ resource: resource3, options: { pinned: true } });
+
+		// [one.txt] [two.html] [>three.html<]
+
+		const sideGroup = part.addGroup(part.activeGroup, GroupDirection.RIGHT);
+
+		// [one.txt] [two.html] [>three.html<] | <empty>
+
+		const pane2 = await editorService.openEditor({ resource: resource1, options: { pinned: true } }, sideGroup);
+		await editorService.openEditor({ resource: resource2, options: { pinned: true } });
+		await editorService.openEditor({ resource: resource3, options: { pinned: true } });
+
+		// [one.txt] [two.html] [>three.html<] | [one.txt] [two.html] [>three.html<]
+
+		await historyService.goBack();
+		await historyService.goBack();
+		await historyService.goBack();
+
+		assert.strictEqual(part.activeGroup.id, pane2?.group?.id);
+		assert.strictEqual(part.activeGroup.activeEditor?.resource?.toString(), resource1.toString());
+
+		// [one.txt] [two.html] [>three.html<] | [>one.txt<] [two.html] [three.html]
+
+		await editorService.openEditor({ resource: resource3, options: { pinned: true } }, pane1?.group);
+
+		await historyService.goBack();
+		await historyService.goBack();
+		await historyService.goBack();
+
+		assert.strictEqual(part.activeGroup.id, pane1?.group?.id);
+		assert.strictEqual(part.activeGroup.activeEditor?.resource?.toString(), resource1.toString());
+	});
+
+	test('back / forward: editor  scope', async function () {
+		const [part, historyService, editorService] = await createServices(GoScope.EDITOR);
+
+		const resource1 = toResource.call(this, '/path/one.txt');
+		const resource2 = toResource.call(this, '/path/two.html');
+
+		const pane = await editorService.openEditor({ resource: resource1, options: { pinned: true } }) as TestTextFileEditor;
+
+		await setTextSelection(historyService, pane, new Selection(2, 2, 2, 10));
+		await setTextSelection(historyService, pane, new Selection(50, 3, 50, 20));
+
+		await editorService.openEditor({ resource: resource2, options: { pinned: true } });
+		await setTextSelection(historyService, pane, new Selection(12, 2, 12, 10));
+		await setTextSelection(historyService, pane, new Selection(150, 3, 150, 20));
+
+		await historyService.goBack();
+		assertTextSelection(new Selection(12, 2, 12, 10), pane);
+
+		await historyService.goBack();
+		assertTextSelection(new Selection(12, 2, 12, 10), pane); // no change
+
+		assert.strictEqual(part.activeGroup.activeEditor?.resource?.toString(), resource2.toString());
+
+		await editorService.openEditor({ resource: resource1, options: { pinned: true } });
+
+		await historyService.goBack();
+		assertTextSelection(new Selection(2, 2, 2, 10), pane);
+
+		await historyService.goBack();
+		assertTextSelection(new Selection(2, 2, 2, 10), pane); // no change
+
+		assert.strictEqual(part.activeGroup.activeEditor?.resource?.toString(), resource1.toString());
+	});
+
 
 	test('go to last edit location', async function () {
 		const [, historyService, editorService, textFileService] = await createServices();

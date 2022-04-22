@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { app, BrowserWindow, MessageBoxOptions, nativeTheme, WebContents } from 'electron';
+import { app, BrowserWindow, MessageBoxOptions, WebContents } from 'electron';
 import { statSync } from 'fs';
 import { hostname, release } from 'os';
 import { coalesce, distinct, firstOrDefault } from 'vs/base/common/arrays';
@@ -38,9 +38,9 @@ import { IProductService } from 'vs/platform/product/common/productService';
 import { IProtocolMainService } from 'vs/platform/protocol/electron-main/protocol';
 import { getRemoteAuthority } from 'vs/platform/remote/common/remoteHosts';
 import { IStateMainService } from 'vs/platform/state/electron-main/state';
-import { IAddFoldersRequest, INativeOpenFileRequest, INativeWindowConfiguration, IOpenEmptyWindowOptions, IPath, IPathsToWaitFor, isFileToOpen, isFolderToOpen, isWorkspaceToOpen, IWindowOpenable, IWindowSettings } from 'vs/platform/windows/common/windows';
+import { IAddFoldersRequest, INativeOpenFileRequest, INativeWindowConfiguration, IOpenEmptyWindowOptions, IPath, IPathsToWaitFor, isFileToOpen, isFolderToOpen, isWorkspaceToOpen, IWindowOpenable, IWindowSettings } from 'vs/platform/window/common/window';
 import { CodeWindow } from 'vs/platform/windows/electron-main/window';
-import { ICodeWindow, IOpenConfiguration, IOpenEmptyConfiguration, IWindowsCountChangedEvent, IWindowsMainService, OpenContext, UnloadReason } from 'vs/platform/windows/electron-main/windows';
+import { IOpenConfiguration, IOpenEmptyConfiguration, IWindowsCountChangedEvent, IWindowsMainService, OpenContext } from 'vs/platform/windows/electron-main/windows';
 import { findWindowOnExtensionDevelopmentPath, findWindowOnFile, findWindowOnWorkspaceOrFolder } from 'vs/platform/windows/electron-main/windowsFinder';
 import { IWindowState, WindowsStateHandler } from 'vs/platform/windows/electron-main/windowsStateHandler';
 import { IRecent } from 'vs/platform/workspaces/common/workspaces';
@@ -48,6 +48,9 @@ import { hasWorkspaceFileExtension, ISingleFolderWorkspaceIdentifier, isSingleFo
 import { getSingleFolderWorkspaceIdentifier, getWorkspaceIdentifier } from 'vs/platform/workspaces/electron-main/workspaces';
 import { IWorkspacesHistoryMainService } from 'vs/platform/workspaces/electron-main/workspacesHistoryMainService';
 import { IWorkspacesManagementMainService } from 'vs/platform/workspaces/electron-main/workspacesManagementMainService';
+import { ICodeWindow, UnloadReason } from 'vs/platform/window/electron-main/window';
+import { IThemeMainService } from 'vs/platform/theme/electron-main/themeMainService';
+import { IEditorOptions, ITextEditorOptions } from 'vs/platform/editor/common/editor';
 
 //#region Helper Interfaces
 
@@ -116,23 +119,33 @@ interface IFilesToOpen {
 	filesToWait?: IPathsToWaitFor;
 }
 
-interface IPathToOpen extends IPath {
+interface IPathToOpen<T = IEditorOptions> extends IPath<T> {
 
-	// the workspace to open
+	/**
+	 * The workspace to open
+	 */
 	readonly workspace?: IWorkspaceIdentifier | ISingleFolderWorkspaceIdentifier;
 
-	// whether the path is considered to be transient or not
-	// for example, a transient workspace should not add to
-	// the workspaces history and should never restore
+	/**
+	 * Whether the path is considered to be transient or not
+	 * for example, a transient workspace should not add to
+	 * the workspaces history and should never restore.
+	 */
 	readonly transient?: boolean;
 
-	// the backup path to use
+	/**
+	 * The backup path to use
+	 */
 	readonly backupPath?: string;
 
-	// the remote authority for the Code instance to open. Undefined if not remote.
+	/**
+	 * The remote authority for the Code instance to open. Undefined if not remote.
+	 */
 	readonly remoteAuthority?: string;
 
-	// optional label for the recent history
+	/**
+	 * Optional label for the recent history
+	 */
 	label?: string;
 }
 
@@ -189,7 +202,8 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		@IDialogMainService private readonly dialogMainService: IDialogMainService,
 		@IFileService private readonly fileService: IFileService,
 		@IProductService private readonly productService: IProductService,
-		@IProtocolMainService private readonly protocolMainService: IProtocolMainService
+		@IProtocolMainService private readonly protocolMainService: IProtocolMainService,
+		@IThemeMainService private readonly themeMainService: IThemeMainService
 	) {
 		super();
 
@@ -913,7 +927,7 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		return this.doResolveRemoteOpenable(openable, options);
 	}
 
-	private doResolveRemoteOpenable(openable: IWindowOpenable, options: IPathResolveOptions): IPathToOpen | undefined {
+	private doResolveRemoteOpenable(openable: IWindowOpenable, options: IPathResolveOptions): IPathToOpen<ITextEditorOptions> | undefined {
 		let uri = this.resourceFromOpenable(openable);
 
 		// use remote authority from vscode
@@ -929,7 +943,9 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 
 				return {
 					fileUri: uri.with({ path }),
-					selection: line ? { startLineNumber: line, startColumn: column || 1 } : undefined,
+					options: {
+						selection: line ? { startLineNumber: line, startColumn: column || 1 } : undefined
+					},
 					remoteAuthority
 				};
 			}
@@ -958,7 +974,7 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		return openable.fileUri;
 	}
 
-	private doResolveFilePath(path: string, options: IPathResolveOptions): IPathToOpen | undefined {
+	private doResolveFilePath(path: string, options: IPathResolveOptions): IPathToOpen<ITextEditorOptions> | undefined {
 
 		// Extract line/col information from path
 		let lineNumber: number | undefined;
@@ -1001,7 +1017,9 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 					fileUri: URI.file(path),
 					type: FileType.File,
 					exists: true,
-					selection: lineNumber ? { startLineNumber: lineNumber, startColumn: columnNumber || 1 } : undefined
+					options: {
+						selection: lineNumber ? { startLineNumber: lineNumber, startColumn: columnNumber || 1 } : undefined
+					}
 				};
 			}
 
@@ -1044,7 +1062,7 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		return undefined;
 	}
 
-	private doResolvePathRemote(path: string, options: IPathResolveOptions): IPathToOpen | undefined {
+	private doResolvePathRemote(path: string, options: IPathResolveOptions): IPathToOpen<ITextEditorOptions> | undefined {
 		const first = path.charCodeAt(0);
 		const remoteAuthority = options.remoteAuthority;
 
@@ -1078,7 +1096,9 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 				if (options.forceOpenWorkspaceAsFile) {
 					return {
 						fileUri: uri,
-						selection: lineNumber ? { startLineNumber: lineNumber, startColumn: columnNumber || 1 } : undefined,
+						options: {
+							selection: lineNumber ? { startLineNumber: lineNumber, startColumn: columnNumber || 1 } : undefined
+						},
 						remoteAuthority: options.remoteAuthority
 					};
 				}
@@ -1090,7 +1110,9 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 			else if (options.gotoLineMode || posix.basename(path).indexOf('.') !== -1) {
 				return {
 					fileUri: uri,
-					selection: lineNumber ? { startLineNumber: lineNumber, startColumn: columnNumber || 1 } : undefined,
+					options: {
+						selection: lineNumber ? { startLineNumber: lineNumber, startColumn: columnNumber || 1 } : undefined
+					},
 					remoteAuthority
 				};
 			}
@@ -1296,11 +1318,9 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 			zoomLevel: typeof windowConfig?.zoomLevel === 'number' ? windowConfig.zoomLevel : undefined,
 
 			autoDetectHighContrast: windowConfig?.autoDetectHighContrast ?? true,
+			autoDetectColorScheme: windowConfig?.autoDetectColorScheme ?? false,
 			accessibilitySupport: app.accessibilitySupportEnabled,
-			colorScheme: {
-				dark: nativeTheme.shouldUseDarkColors,
-				highContrast: nativeTheme.shouldUseInvertedColorScheme || nativeTheme.shouldUseHighContrastColors
-			}
+			colorScheme: this.themeMainService.getColorScheme()
 		};
 
 		let window: ICodeWindow | undefined;

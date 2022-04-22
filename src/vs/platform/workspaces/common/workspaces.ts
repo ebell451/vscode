@@ -14,6 +14,7 @@ import { isAbsolute } from 'vs/base/common/path';
 import { isLinux, isMacintosh, isWindows } from 'vs/base/common/platform';
 import { IExtUri, isEqualAuthority } from 'vs/base/common/resources';
 import { URI } from 'vs/base/common/uri';
+import { IWorkspaceBackupInfo, IFolderBackupInfo } from 'vs/platform/backup/common/backup';
 import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
 import { ILogService } from 'vs/platform/log/common/log';
 import { getRemoteAuthority } from 'vs/platform/remote/common/remoteHosts';
@@ -26,10 +27,10 @@ export interface IWorkspacesService {
 	readonly _serviceBrand: undefined;
 
 	// Workspaces Management
-	enterWorkspace(path: URI): Promise<IEnterWorkspaceResult | undefined>;
+	enterWorkspace(workspaceUri: URI): Promise<IEnterWorkspaceResult | undefined>;
 	createUntitledWorkspace(folders?: IWorkspaceFolderCreationData[], remoteAuthority?: string): Promise<IWorkspaceIdentifier>;
 	deleteUntitledWorkspace(workspace: IWorkspaceIdentifier): Promise<void>;
-	getWorkspaceIdentifier(workspacePath: URI): Promise<IWorkspaceIdentifier>;
+	getWorkspaceIdentifier(workspaceUri: URI): Promise<IWorkspaceIdentifier>;
 
 	// Workspaces History
 	readonly onDidChangeRecentlyOpened: Event<void>;
@@ -79,28 +80,6 @@ export function isRecentFolder(curr: IRecent): curr is IRecentFolder {
 
 export function isRecentFile(curr: IRecent): curr is IRecentFile {
 	return curr.hasOwnProperty('fileUri');
-}
-
-//#endregion
-
-//#region Backups
-
-export interface IWorkspaceBackupInfo {
-	readonly workspace: IWorkspaceIdentifier;
-	readonly remoteAuthority?: string;
-}
-
-export interface IFolderBackupInfo {
-	readonly folderUri: URI;
-	readonly remoteAuthority?: string;
-}
-
-export function isFolderBackupInfo(curr: IWorkspaceBackupInfo | IFolderBackupInfo): curr is IFolderBackupInfo {
-	return curr && curr.hasOwnProperty('folderUri');
-}
-
-export function isWorkspaceBackupInfo(curr: IWorkspaceBackupInfo | IFolderBackupInfo): curr is IWorkspaceBackupInfo {
-	return curr && curr.hasOwnProperty('workspace');
 }
 
 //#endregion
@@ -318,13 +297,6 @@ interface ISerializedRecentFile {
 	readonly remoteAuthority?: string;
 }
 
-interface ISerializedRecentlyOpenedLegacy {
-	readonly workspaces3: Array<{ id: string; configURIPath: string } | string>; // workspace or URI.toString() // added in 1.32
-	readonly workspaceLabels?: Array<string | null>; // added in 1.33
-	readonly files2: string[]; // files as URI.toString() // added in 1.32
-	readonly fileLabels?: Array<string | null>; // added in 1.33
-}
-
 interface ISerializedRecentlyOpened {
 	readonly entries: Array<ISerializedRecentWorkspace | ISerializedRecentFolder | ISerializedRecentFile>; // since 1.55
 }
@@ -370,26 +342,6 @@ export function restoreRecentlyOpened(data: RecentlyOpenedStorageData | undefine
 					result.files.push({ label, remoteAuthority, fileUri: URI.parse(entry.fileUri) });
 				}
 			});
-		} else {
-			const storedRecents2 = data as ISerializedRecentlyOpenedLegacy;
-			if (Array.isArray(storedRecents2.workspaces3)) {
-				restoreGracefully(storedRecents2.workspaces3, (workspace, i) => {
-					const label: string | undefined = (Array.isArray(storedRecents2.workspaceLabels) && storedRecents2.workspaceLabels[i]) || undefined;
-					if (typeof workspace === 'object' && typeof workspace.id === 'string' && typeof workspace.configURIPath === 'string') {
-						result.workspaces.push({ label, workspace: { id: workspace.id, configPath: URI.parse(workspace.configURIPath) } });
-					} else if (typeof workspace === 'string') {
-						result.workspaces.push({ label, folderUri: URI.parse(workspace) });
-					}
-				});
-			}
-			if (Array.isArray(storedRecents2.files2)) {
-				restoreGracefully(storedRecents2.files2, (file, i) => {
-					const label: string | undefined = (Array.isArray(storedRecents2.fileLabels) && storedRecents2.fileLabels[i]) || undefined;
-					if (typeof file === 'string') {
-						result.files.push({ label, fileUri: URI.parse(file) });
-					}
-				});
-			}
 		}
 	}
 
