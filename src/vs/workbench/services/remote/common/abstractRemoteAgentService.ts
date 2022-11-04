@@ -153,7 +153,7 @@ export abstract class AbstractRemoteAgentService extends Disposable implements I
 	}
 }
 
-export class RemoteAgentConnection extends Disposable implements IRemoteAgentConnection {
+class RemoteAgentConnection extends Disposable implements IRemoteAgentConnection {
 
 	private readonly _onReconnecting = this._register(new Emitter<void>());
 	public readonly onReconnecting = this._onReconnecting.event;
@@ -233,7 +233,7 @@ export class RemoteAgentConnection extends Disposable implements IRemoteAgentCon
 			ipcLogger: false ? new IPCLogger(`Local \u2192 Remote`, `Remote \u2192 Local`) : null
 		};
 		let connection: ManagementPersistentConnection;
-		let start = Date.now();
+		const start = Date.now();
 		try {
 			connection = this._register(await connectRemoteAgentManagement(options, this.remoteAuthority, `renderer`));
 		} finally {

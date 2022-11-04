@@ -23,8 +23,7 @@ import { IDebugService, IExpression, IExpressionContainer } from 'vs/workbench/c
 import { Expression, ExpressionContainer, Variable } from 'vs/workbench/contrib/debug/common/debugModel';
 import { ReplEvaluationResult } from 'vs/workbench/contrib/debug/common/replModel';
 
-export const MAX_VALUE_RENDER_LENGTH_IN_VIEWLET = 1024;
-export const twistiePixels = 20;
+const MAX_VALUE_RENDER_LENGTH_IN_VIEWLET = 1024;
 const booleanRegex = /^(true|false)$/i;
 const stringRegex = /^(['"]).*\1$/;
 const $ = dom.$;
@@ -63,21 +62,23 @@ export function renderExpressionValue(expressionOrValue: IExpressionContainer | 
 		if (value !== Expression.DEFAULT_VALUE) {
 			container.classList.add('error');
 		}
-	} else if ((expressionOrValue instanceof ExpressionContainer) && options.showChanged && expressionOrValue.valueChanged && value !== Expression.DEFAULT_VALUE) {
-		// value changed color has priority over other colors.
-		container.className = 'value changed';
-		expressionOrValue.valueChanged = false;
-	}
+	} else {
+		if ((expressionOrValue instanceof ExpressionContainer) && options.showChanged && expressionOrValue.valueChanged && value !== Expression.DEFAULT_VALUE) {
+			// value changed color has priority over other colors.
+			container.className = 'value changed';
+			expressionOrValue.valueChanged = false;
+		}
 
-	if (options.colorize && typeof expressionOrValue !== 'string') {
-		if (expressionOrValue.type === 'number' || expressionOrValue.type === 'boolean' || expressionOrValue.type === 'string') {
-			container.classList.add(expressionOrValue.type);
-		} else if (!isNaN(+value)) {
-			container.classList.add('number');
-		} else if (booleanRegex.test(value)) {
-			container.classList.add('boolean');
-		} else if (stringRegex.test(value)) {
-			container.classList.add('string');
+		if (options.colorize && typeof expressionOrValue !== 'string') {
+			if (expressionOrValue.type === 'number' || expressionOrValue.type === 'boolean' || expressionOrValue.type === 'string') {
+				container.classList.add(expressionOrValue.type);
+			} else if (!isNaN(+value)) {
+				container.classList.add('number');
+			} else if (booleanRegex.test(value)) {
+				container.classList.add('boolean');
+			} else if (stringRegex.test(value)) {
+				container.classList.add('string');
+			}
 		}
 	}
 
