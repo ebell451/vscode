@@ -4,7 +4,6 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import * as nls from 'vscode-nls';
 import * as uri from 'vscode-uri';
 import { ILogger } from '../logging';
 import { MarkdownItEngine } from '../markdownEngine';
@@ -14,7 +13,6 @@ import { WebviewResourceProvider } from '../util/resources';
 import { MarkdownPreviewConfiguration, MarkdownPreviewConfigurationManager } from './previewConfig';
 import { ContentSecurityPolicyArbiter, MarkdownPreviewSecurityLevel } from './security';
 
-const localize = nls.loadMessageBundle();
 
 /**
  * Strings used inside the markdown preview.
@@ -23,17 +21,11 @@ const localize = nls.loadMessageBundle();
  * can be localized using our normal localization process.
  */
 const previewStrings = {
-	cspAlertMessageText: localize(
-		'preview.securityMessage.text',
-		'Some content has been disabled in this document'),
+	cspAlertMessageText: vscode.l10n.t("Some content has been disabled in this document"),
 
-	cspAlertMessageTitle: localize(
-		'preview.securityMessage.title',
-		'Potentially unsafe or insecure content has been disabled in the Markdown preview. Change the Markdown preview security setting to allow insecure content or enable scripts'),
+	cspAlertMessageTitle: vscode.l10n.t("Potentially unsafe or insecure content has been disabled in the Markdown preview. Change the Markdown preview security setting to allow insecure content or enable scripts"),
 
-	cspAlertMessageLabel: localize(
-		'preview.securityMessage.label',
-		'Content Disabled Security Warning')
+	cspAlertMessageLabel: vscode.l10n.t("Content Disabled Security Warning")
 };
 
 export interface MarkdownContentProviderOutput {
@@ -41,6 +33,11 @@ export interface MarkdownContentProviderOutput {
 	containingImages: Set<string>;
 }
 
+export interface ImageInfo {
+	readonly id: string;
+	readonly width: number;
+	readonly height: number;
+}
 
 export class MdDocumentRenderer {
 	constructor(
@@ -65,6 +62,7 @@ export class MdDocumentRenderer {
 		initialLine: number | undefined,
 		selectedLine: number | undefined,
 		state: any | undefined,
+		imageInfo: readonly ImageInfo[],
 		token: vscode.CancellationToken
 	): Promise<MarkdownContentProviderOutput> {
 		const sourceUri = markdownDocument.uri;
@@ -102,7 +100,7 @@ export class MdDocumentRenderer {
 					data-strings="${escapeAttribute(JSON.stringify(previewStrings))}"
 					data-state="${escapeAttribute(JSON.stringify(state || {}))}">
 				<script src="${this._extensionResourcePath(resourceProvider, 'pre.js')}" nonce="${nonce}"></script>
-				${this._getStyles(resourceProvider, sourceUri, config, state)}
+				${this._getStyles(resourceProvider, sourceUri, config, imageInfo)}
 				<base href="${resourceProvider.asWebviewUri(markdownDocument.uri)}">
 			</head>
 			<body class="vscode-body ${config.scrollBeyondLastLine ? 'scrollBeyondLastLine' : ''} ${config.wordWrap ? 'wordWrap' : ''} ${config.markEditorSelection ? 'showEditorSelection' : ''}">
@@ -130,7 +128,7 @@ export class MdDocumentRenderer {
 
 	public renderFileNotFoundDocument(resource: vscode.Uri): string {
 		const resourcePath = uri.Utils.basename(resource);
-		const body = localize('preview.notFound', '{0} cannot be found', resourcePath);
+		const body = vscode.l10n.t('{0} cannot be found', resourcePath);
 		return `<!DOCTYPE html>
 			<html>
 			<body class="vscode-body">
@@ -188,22 +186,24 @@ export class MdDocumentRenderer {
 		].join(' ');
 	}
 
-	private _getImageStabilizerStyles(state?: any) {
+	private _getImageStabilizerStyles(imageInfo: readonly ImageInfo[]): string {
+		if (!imageInfo.length) {
+			return '';
+		}
+
 		let ret = '<style>\n';
-		if (state && state.imageInfo) {
-			state.imageInfo.forEach((imgInfo: any) => {
-				ret += `#${imgInfo.id}.loading {
+		for (const imgInfo of imageInfo) {
+			ret += `#${imgInfo.id}.loading {
 					height: ${imgInfo.height}px;
 					width: ${imgInfo.width}px;
 				}\n`;
-			});
 		}
 		ret += '</style>\n';
 
 		return ret;
 	}
 
-	private _getStyles(resourceProvider: WebviewResourceProvider, resource: vscode.Uri, config: MarkdownPreviewConfiguration, state?: any): string {
+	private _getStyles(resourceProvider: WebviewResourceProvider, resource: vscode.Uri, config: MarkdownPreviewConfiguration, imageInfo: readonly ImageInfo[]): string {
 		const baseStyles: string[] = [];
 		for (const resource of this._contributionProvider.contributions.previewStyles) {
 			baseStyles.push(`<link rel="stylesheet" type="text/css" href="${escapeAttribute(resourceProvider.asWebviewUri(resource))}">`);
@@ -211,7 +211,7 @@ export class MdDocumentRenderer {
 
 		return `${baseStyles.join('\n')}
 			${this._computeCustomStyleSheetIncludes(resourceProvider, resource, config)}
-			${this._getImageStabilizerStyles(state)}`;
+			${this._getImageStabilizerStyles(imageInfo)}`;
 	}
 
 	private _getScripts(resourceProvider: WebviewResourceProvider, nonce: string): string {

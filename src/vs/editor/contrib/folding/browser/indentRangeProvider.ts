@@ -13,7 +13,7 @@ import { FoldingLimitReporter, RangeProvider } from './folding';
 
 const MAX_FOLDING_REGIONS_FOR_INDENT_DEFAULT = 5000;
 
-export const ID_INDENT_PROVIDER = 'indent';
+const ID_INDENT_PROVIDER = 'indent';
 
 export class IndentRangeProvider implements RangeProvider {
 	readonly id = ID_INDENT_PROVIDER;
@@ -66,7 +66,7 @@ export class RangesCollector {
 	public toIndentRanges(model: ITextModel) {
 		const limit = this._foldingRangesLimit.limit;
 		if (this._length <= limit) {
-			this._foldingRangesLimit.report({ limited: false, computed: this._length });
+			this._foldingRangesLimit.update(this._length, false);
 
 			// reverse and create arrays of the exact length
 			const startIndexes = new Uint32Array(this._length);
@@ -77,7 +77,7 @@ export class RangesCollector {
 			}
 			return new FoldingRegions(startIndexes, endIndexes);
 		} else {
-			this._foldingRangesLimit.report({ limited: limit, computed: this._length });
+			this._foldingRangesLimit.update(this._length, limit);
 
 			let entries = 0;
 			let maxIndent = this._indentOccurrences.length;
@@ -120,7 +120,7 @@ interface PreviousRegion {
 
 const foldingRangesLimitDefault: FoldingLimitReporter = {
 	limit: MAX_FOLDING_REGIONS_FOR_INDENT_DEFAULT,
-	report: () => { }
+	update: () => { }
 };
 
 export function computeRanges(model: ITextModel, offSide: boolean, markers?: FoldingMarkers, foldingRangesLimit: FoldingLimitReporter = foldingRangesLimitDefault): FoldingRegions {

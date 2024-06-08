@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { Dimension } from 'vs/base/browser/dom';
 import { AsyncIterableObject } from 'vs/base/common/async';
 import { CancellationToken } from 'vs/base/common/cancellation';
 import { IDisposable } from 'vs/base/common/lifecycle';
@@ -67,6 +68,7 @@ export class HoverForeignElementAnchor {
 		public readonly range: Range,
 		public readonly initialMousePosX: number | undefined,
 		public readonly initialMousePosY: number | undefined,
+		public readonly supportsMarkerHover: boolean | undefined
 	) {
 	}
 	public equals(other: HoverAnchor) {
@@ -92,7 +94,22 @@ export interface IEditorHoverColorPickerWidget {
 	layout(): void;
 }
 
-export interface IEditorHoverRenderContext {
+export interface IEditorHoverContext {
+	/**
+	 * The contents rendered inside the fragment have been changed, which means that the hover should relayout.
+	 */
+	onContentsChanged(): void;
+	/**
+	 * Set the minimum dimensions of the resizable hover
+	 */
+	setMinimumDimensions?(dimensions: Dimension): void;
+	/**
+	 * Hide the hover.
+	 */
+	hide(): void;
+}
+
+export interface IEditorHoverRenderContext extends IEditorHoverContext {
 	/**
 	 * The fragment where dom elements should be attached.
 	 */
@@ -101,18 +118,6 @@ export interface IEditorHoverRenderContext {
 	 * The status bar for actions for this hover.
 	 */
 	readonly statusBar: IEditorHoverStatusBar;
-	/**
-	 * Set if the hover will render a color picker widget.
-	 */
-	setColorPicker(widget: IEditorHoverColorPickerWidget): void;
-	/**
-	 * The contents rendered inside the fragment have been changed, which means that the hover should relayout.
-	 */
-	onContentsChanged(): void;
-	/**
-	 * Hide the hover.
-	 */
-	hide(): void;
 }
 
 export interface IEditorHoverParticipant<T extends IHoverPart = IHoverPart> {
@@ -122,6 +127,7 @@ export interface IEditorHoverParticipant<T extends IHoverPart = IHoverPart> {
 	computeAsync?(anchor: HoverAnchor, lineDecorations: IModelDecoration[], token: CancellationToken): AsyncIterableObject<T>;
 	createLoadingMessage?(anchor: HoverAnchor): T | null;
 	renderHoverParts(context: IEditorHoverRenderContext, hoverParts: T[]): IDisposable;
+	handleResize?(): void;
 }
 
 export type IEditorHoverParticipantCtor = IConstructorSignature<IEditorHoverParticipant, [ICodeEditor]>;
@@ -139,3 +145,17 @@ export const HoverParticipantRegistry = (new class HoverParticipantRegistry {
 	}
 
 }());
+
+export interface IHoverWidget {
+	/**
+	 * Returns whether the hover widget is shown or should show in the future.
+	 * If the widget should show, this triggers the display.
+	 * @param mouseEvent editor mouse event
+	 */
+	showsOrWillShow(mouseEvent: IEditorMouseEvent): boolean;
+
+	/**
+	 * Hides the hover.
+	 */
+	hide(): void;
+}

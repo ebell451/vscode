@@ -8,31 +8,33 @@ import { CancellationToken, CancellationTokenSource } from 'vs/base/common/cance
 import { Emitter } from 'vs/base/common/event';
 import { Iterable } from 'vs/base/common/iterator';
 import { Disposable, DisposableStore, IDisposable, toDisposable } from 'vs/base/common/lifecycle';
+import { isDefined } from 'vs/base/common/types';
 import { localize } from 'vs/nls';
+import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
 import { IContextKey, IContextKeyService } from 'vs/platform/contextkey/common/contextkey';
 import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
 import { INotificationService } from 'vs/platform/notification/common/notification';
 import { IStorageService, StorageScope, StorageTarget } from 'vs/platform/storage/common/storage';
+import { IUriIdentityService } from 'vs/platform/uriIdentity/common/uriIdentity';
 import { IWorkspaceTrustRequestService } from 'vs/platform/workspace/common/workspaceTrust';
+import { getTestingConfiguration, TestingConfigKeys } from 'vs/workbench/contrib/testing/common/configuration';
 import { MainThreadTestCollection } from 'vs/workbench/contrib/testing/common/mainThreadTestCollection';
 import { MutableObservableValue } from 'vs/workbench/contrib/testing/common/observableValue';
 import { StoredValue } from 'vs/workbench/contrib/testing/common/storedValue';
-import { ResolvedTestRunRequest, TestDiffOpType, TestsDiff } from 'vs/workbench/contrib/testing/common/testTypes';
 import { TestExclusions } from 'vs/workbench/contrib/testing/common/testExclusions';
 import { TestId } from 'vs/workbench/contrib/testing/common/testId';
 import { TestingContextKeys } from 'vs/workbench/contrib/testing/common/testingContextKeys';
 import { canUseProfileWithTest, ITestProfileService } from 'vs/workbench/contrib/testing/common/testProfileService';
 import { ITestResult } from 'vs/workbench/contrib/testing/common/testResult';
 import { ITestResultService } from 'vs/workbench/contrib/testing/common/testResultService';
-import { AmbiguousRunTestsRequest, IMainThreadTestController, ITestService } from 'vs/workbench/contrib/testing/common/testService';
+import { AmbiguousRunTestsRequest, IMainThreadTestController, IMainThreadTestHostProxy, ITestFollowups, ITestService } from 'vs/workbench/contrib/testing/common/testService';
+import { InternalTestItem, ITestRunProfile, ResolvedTestRunRequest, TestDiffOpType, TestMessageFollowupRequest, TestsDiff } from 'vs/workbench/contrib/testing/common/testTypes';
 import { IEditorService } from 'vs/workbench/services/editor/common/editorService';
-import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
-import { getTestingConfiguration, TestingConfigKeys } from 'vs/workbench/contrib/testing/common/configuration';
-import { isDefined } from 'vs/base/common/types';
 
 export class TestService extends Disposable implements ITestService {
 	declare readonly _serviceBrand: undefined;
 	private testControllers = new Map<string, IMainThreadTestController>();
+	private testExtHosts = new Set<IMainThreadTestHostProxy>();
 
 	private readonly cancelExtensionTestRunEmitter = new Emitter<{ runId: string | undefined }>();
 	private readonly willProcessDiffEmitter = new Emitter<TestsDiff>();
@@ -41,6 +43,8 @@ export class TestService extends Disposable implements ITestService {
 	private readonly providerCount: IContextKey<number>;
 	private readonly canRefreshTests: IContextKey<boolean>;
 	private readonly isRefreshingTests: IContextKey<boolean>;
+	private readonly activeEditorHasTests: IContextKey<boolean>;
+
 	/**
 	 * Cancellation for runs requested by the user being managed by the UI.
 	 * Test runs initiated by extensions are not included here.
@@ -65,7 +69,7 @@ export class TestService extends Disposable implements ITestService {
 	/**
 	 * @inheritdoc
 	 */
-	public readonly collection = new MainThreadTestCollection(this.expandTest.bind(this));
+	public readonly collection = new MainThreadTestCollection(this.uriIdentityService, this.expandTest.bind(this));
 
 	/**
 	 * @inheritdoc
@@ -75,15 +79,16 @@ export class TestService extends Disposable implements ITestService {
 	/**
 	 * @inheritdoc
 	 */
-	public readonly showInlineOutput = MutableObservableValue.stored(new StoredValue<boolean>({
+	public readonly showInlineOutput = MutableObservableValue.stored(this._register(new StoredValue<boolean>({
 		key: 'inlineTestOutputVisible',
 		scope: StorageScope.WORKSPACE,
 		target: StorageTarget.USER
-	}, this.storage), true);
+	}, this.storage)), true);
 
 	constructor(
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@IInstantiationService instantiationService: IInstantiationService,
+		@IUriIdentityService private readonly uriIdentityService: IUriIdentityService,
 		@IStorageService private readonly storage: IStorageService,
 		@IEditorService private readonly editorService: IEditorService,
 		@ITestProfileService private readonly testProfiles: ITestProfileService,
@@ -97,6 +102,9 @@ export class TestService extends Disposable implements ITestService {
 		this.providerCount = TestingContextKeys.providerCount.bindTo(contextKeyService);
 		this.canRefreshTests = TestingContextKeys.canRefreshTests.bindTo(contextKeyService);
 		this.isRefreshingTests = TestingContextKeys.isRefreshingTests.bindTo(contextKeyService);
+		this.activeEditorHasTests = TestingContextKeys.activeEditorHasTests.bindTo(contextKeyService);
+
+		this._register(editorService.onDidActiveEditorChange(() => this.updateEditorContextKeys()));
 	}
 
 	/**
@@ -125,24 +133,36 @@ export class TestService extends Disposable implements ITestService {
 	 * @inheritdoc
 	 */
 	public async runTests(req: AmbiguousRunTestsRequest, token = CancellationToken.None): Promise<ITestResult> {
-		const resolved: ResolvedTestRunRequest = {
-			targets: [],
-			exclude: req.exclude?.map(t => t.item.extId),
-			isAutoRun: req.isAutoRun,
-		};
-
-		// First, try to run the tests using the default run profiles...
-		for (const profile of this.testProfiles.getGroupDefaultProfiles(req.group)) {
-			const testIds = req.tests.filter(t => canUseProfileWithTest(profile, t)).map(t => t.item.extId);
-			if (testIds.length) {
-				resolved.targets.push({
-					testIds: testIds,
-					profileGroup: profile.group,
-					profileId: profile.profileId,
-					controllerId: profile.controllerId,
-				});
+		// We try to ensure that all tests in the request will be run, preferring
+		// to use default profiles for each controller when possible.
+		const byProfile: { profile: ITestRunProfile; tests: InternalTestItem[] }[] = [];
+		for (const test of req.tests) {
+			const existing = byProfile.find(p => canUseProfileWithTest(p.profile, test));
+			if (existing) {
+				existing.tests.push(test);
+				continue;
 			}
+
+			const allProfiles = this.testProfiles.getControllerProfiles(test.controllerId)
+				.filter(p => (p.group & req.group) !== 0 && canUseProfileWithTest(p, test));
+			const bestProfile = allProfiles.find(p => p.isDefault) || allProfiles[0];
+			if (!bestProfile) {
+				continue;
+			}
+
+			byProfile.push({ profile: bestProfile, tests: [test] });
 		}
+
+		const resolved: ResolvedTestRunRequest = {
+			targets: byProfile.map(({ profile, tests }) => ({
+				profileId: profile.profileId,
+				controllerId: tests[0].controllerId,
+				testIds: tests.map(t => t.item.extId),
+			})),
+			group: req.group,
+			exclude: req.exclude?.map(t => t.item.extId),
+			continuous: req.continuous,
+		};
 
 		// If no tests are covered by the defaults, just use whatever the defaults
 		// for their controller are. This can happen if the user chose specific
@@ -161,7 +181,6 @@ export class TestService extends Disposable implements ITestService {
 					if (profile) {
 						resolved.targets.push({
 							testIds: byProfile.map(t => t.test.item.extId),
-							profileGroup: req.group,
 							profileId: profile.profileId,
 							controllerId: profile.controllerId,
 						});
@@ -171,6 +190,41 @@ export class TestService extends Disposable implements ITestService {
 		}
 
 		return this.runResolvedTests(resolved, token);
+	}
+
+	/** @inheritdoc */
+	public async startContinuousRun(req: ResolvedTestRunRequest, token: CancellationToken) {
+		if (!req.exclude) {
+			req.exclude = [...this.excluded.all];
+		}
+
+		const trust = await this.workspaceTrustRequestService.requestWorkspaceTrust({
+			message: localize('testTrust', "Running tests may execute code in your workspace."),
+		});
+
+		if (!trust) {
+			return;
+		}
+
+		const byController = groupBy(req.targets, (a, b) => a.controllerId.localeCompare(b.controllerId));
+		const requests = byController.map(
+			group => this.testControllers.get(group[0].controllerId)?.startContinuousRun(
+				group.map(controlReq => ({
+					excludeExtIds: req.exclude!.filter(t => !controlReq.testIds.includes(t)),
+					profileId: controlReq.profileId,
+					controllerId: controlReq.controllerId,
+					testIds: controlReq.testIds,
+				})),
+				token,
+			).then(result => {
+				const errs = result.map(r => r.error).filter(isDefined);
+				if (errs.length) {
+					this.notificationService.error(localize('testError', 'An error occurred attempting to run tests: {0}', errs.join(' ')));
+				}
+			})
+		);
+
+		await Promise.all(requests);
 	}
 
 	/**
@@ -225,9 +279,36 @@ export class TestService extends Disposable implements ITestService {
 	/**
 	 * @inheritdoc
 	 */
+	public async provideTestFollowups(req: TestMessageFollowupRequest, token: CancellationToken): Promise<ITestFollowups> {
+		const reqs = await Promise.all([...this.testExtHosts].map(async ctrl =>
+			({ ctrl, followups: await ctrl.provideTestFollowups(req, token) })));
+
+		const followups: ITestFollowups = {
+			followups: reqs.flatMap(({ ctrl, followups }) => followups.map(f => ({
+				message: f.title,
+				execute: () => ctrl.executeTestFollowup(f.id)
+			}))),
+			dispose: () => {
+				for (const { ctrl, followups } of reqs) {
+					ctrl.disposeTestFollowups(followups.map(f => f.id));
+				}
+			}
+		};
+
+		if (token.isCancellationRequested) {
+			followups.dispose();
+		}
+
+		return followups;
+	}
+
+	/**
+	 * @inheritdoc
+	 */
 	public publishDiff(_controllerId: string, diff: TestsDiff) {
 		this.willProcessDiffEmitter.fire(diff);
 		this.collection.apply(diff);
+		this.updateEditorContextKeys();
 		this.didProcessDiffEmitter.fire(diff);
 	}
 
@@ -285,6 +366,14 @@ export class TestService extends Disposable implements ITestService {
 	/**
 	 * @inheritdoc
 	 */
+	registerExtHost(controller: IMainThreadTestHostProxy): IDisposable {
+		this.testExtHosts.add(controller);
+		return toDisposable(() => this.testExtHosts.delete(controller));
+	}
+
+	/**
+	 * @inheritdoc
+	 */
 	public registerTestController(id: string, controller: IMainThreadTestController): IDisposable {
 		this.testControllers.set(id, controller);
 		this.providerCount.set(this.testControllers.size);
@@ -313,8 +402,17 @@ export class TestService extends Disposable implements ITestService {
 		return disposable;
 	}
 
+	private updateEditorContextKeys() {
+		const uri = this.editorService.activeEditor?.resource;
+		if (uri) {
+			this.activeEditorHasTests.set(!Iterable.isEmpty(this.collection.getNodeByUrl(uri)));
+		} else {
+			this.activeEditorHasTests.set(false);
+		}
+	}
+
 	private async saveAllBeforeTest(req: ResolvedTestRunRequest, configurationService: IConfigurationService = this.configurationService, editorService: IEditorService = this.editorService): Promise<void> {
-		if (req.isUiTriggered === false) {
+		if (req.preserveFocus === true) {
 			return;
 		}
 		const saveBeforeTest = getTestingConfiguration(this.configurationService, TestingConfigKeys.SaveBeforeTest);

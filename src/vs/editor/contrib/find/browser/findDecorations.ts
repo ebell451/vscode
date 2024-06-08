@@ -91,6 +91,14 @@ export class FindDecorations implements IDisposable {
 		return 1;
 	}
 
+	public getDecorationRangeAt(index: number): Range | null {
+		const decorationId = index < this._decorations.length ? this._decorations[index] : null;
+		if (decorationId) {
+			return this._editor.getModel().getDecorationRange(decorationId);
+		}
+		return null;
+	}
+
 	public getCurrentMatchesPosition(desiredRange: Range): number {
 		const candidates = this._editor.getModel().getDecorationsInRange(desiredRange);
 		for (const candidate of candidates) {
@@ -280,6 +288,7 @@ export class FindDecorations implements IDisposable {
 		stickiness: TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
 		zIndex: 13,
 		className: 'currentFindMatch',
+		inlineClassName: 'currentFindMatchInline',
 		showIfCollapsed: true,
 		overviewRuler: {
 			color: themeColorFromId(overviewRulerFindMatchForeground),
@@ -296,6 +305,7 @@ export class FindDecorations implements IDisposable {
 		stickiness: TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
 		zIndex: 10,
 		className: 'findMatch',
+		inlineClassName: 'findMatchInline',
 		showIfCollapsed: true,
 		overviewRuler: {
 			color: themeColorFromId(overviewRulerFindMatchForeground),

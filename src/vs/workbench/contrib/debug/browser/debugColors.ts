@@ -4,7 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { registerColor, foreground, editorInfoForeground, editorWarningForeground, errorForeground, badgeBackground, badgeForeground, listDeemphasizedForeground, contrastBorder, inputBorder, toolbarHoverBackground } from 'vs/platform/theme/common/colorRegistry';
-import { registerThemingParticipant, ThemeIcon } from 'vs/platform/theme/common/themeService';
+import { registerThemingParticipant } from 'vs/platform/theme/common/themeService';
+import { ThemeIcon } from 'vs/base/common/themables';
 import { Color } from 'vs/base/common/color';
 import { localize } from 'vs/nls';
 import * as icons from 'vs/workbench/contrib/debug/browser/debugIcons';
@@ -34,6 +35,7 @@ export const debugIconStartForeground = registerColor('debugIcon.startForeground
 export function registerColors() {
 
 	const debugTokenExpressionName = registerColor('debugTokenExpression.name', { dark: '#c586c0', light: '#9b46b0', hcDark: foreground, hcLight: foreground }, 'Foreground color for the token names shown in the debug views (ie. the Variables or Watch view).');
+	const debugTokenExpressionType = registerColor('debugTokenExpression.type', { dark: '#4A90E2', light: '#4A90E2', hcDark: foreground, hcLight: foreground }, 'Foreground color for the token types shown in the debug views (ie. the Variables or Watch view).');
 	const debugTokenExpressionValue = registerColor('debugTokenExpression.value', { dark: '#cccccc99', light: '#6c6c6ccc', hcDark: foreground, hcLight: foreground }, 'Foreground color for the token values shown in the debug views (ie. the Variables or Watch view).');
 	const debugTokenExpressionString = registerColor('debugTokenExpression.string', { dark: '#ce9178', light: '#a31515', hcDark: '#f48771', hcLight: '#a31515' }, 'Foreground color for strings in the debug views (ie. the Variables or Watch view).');
 	const debugTokenExpressionBoolean = registerColor('debugTokenExpression.boolean', { dark: '#4e94ce', light: '#0000ff', hcDark: '#75bdfe', hcLight: '#0000ff' }, 'Foreground color for booleans in the debug views (ie. the Variables or Watch view).');
@@ -209,6 +211,7 @@ export function registerColors() {
 		}
 
 		const tokenNameColor = theme.getColor(debugTokenExpressionName)!;
+		const tokenTypeColor = theme.getColor(debugTokenExpressionType)!;
 		const tokenValueColor = theme.getColor(debugTokenExpressionValue)!;
 		const tokenStringColor = theme.getColor(debugTokenExpressionString)!;
 		const tokenBooleanColor = theme.getColor(debugTokenExpressionBoolean)!;
@@ -218,6 +221,10 @@ export function registerColors() {
 		collector.addRule(`
 			.monaco-workbench .monaco-list-row .expression .name {
 				color: ${tokenNameColor};
+			}
+
+			.monaco-workbench .monaco-list-row .expression .type {
+				color: ${tokenTypeColor};
 			}
 
 			.monaco-workbench .monaco-list-row .expression .value,
@@ -314,7 +321,7 @@ export function registerColors() {
 
 		const debugIconDisconnectColor = theme.getColor(debugIconDisconnectForeground);
 		if (debugIconDisconnectColor) {
-			collector.addRule(`.monaco-workbench .part > .title > .title-actions .action-label${ThemeIcon.asCSSSelector(icons.debugDisconnect)},.monaco-workbench .debug-view-content ${ThemeIcon.asCSSSelector(icons.debugDisconnect)}, .monaco-workbench .debug-toolbar ${ThemeIcon.asCSSSelector(icons.debugDisconnect)} { color: ${debugIconDisconnectColor}; }`);
+			collector.addRule(`.monaco-workbench .part > .title > .title-actions .action-label${ThemeIcon.asCSSSelector(icons.debugDisconnect)},.monaco-workbench .debug-view-content ${ThemeIcon.asCSSSelector(icons.debugDisconnect)}, .monaco-workbench .debug-toolbar ${ThemeIcon.asCSSSelector(icons.debugDisconnect)}, .monaco-workbench .command-center-center ${ThemeIcon.asCSSSelector(icons.debugDisconnect)} { color: ${debugIconDisconnectColor}; }`);
 		}
 
 		const debugIconRestartColor = theme.getColor(debugIconRestartForeground);

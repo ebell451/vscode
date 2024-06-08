@@ -11,7 +11,7 @@ import { Extensions, IQuickAccessProvider, IQuickAccessProviderDescriptor, IQuic
 import { IQuickInputService, IQuickPick, IQuickPickItem } from 'vs/platform/quickinput/common/quickInput';
 
 interface IHelpQuickAccessPickItem extends IQuickPickItem {
-	prefix: string;
+	readonly prefix: string;
 }
 
 export class HelpQuickAccessProvider implements IQuickAccessProvider {
@@ -51,7 +51,7 @@ export class HelpQuickAccessProvider implements IQuickAccessProvider {
 		return disposables;
 	}
 
-	public getQuickAccessProviders(): IHelpQuickAccessPickItem[] {
+	getQuickAccessProviders(): IHelpQuickAccessPickItem[] {
 		const providers: IHelpQuickAccessPickItem[] = this.registry
 			.getQuickAccessProviders()
 			.sort((providerA, providerB) => providerA.prefix.localeCompare(providerB.prefix))
@@ -75,4 +75,3 @@ export class HelpQuickAccessProvider implements IQuickAccessProvider {
 		});
 	}
 }
-

@@ -4,7 +4,6 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import * as nls from 'vscode-nls';
 import * as uri from 'vscode-uri';
 import { ILogger } from '../logging';
 import { MarkdownContributionProvider } from '../markdownExtensions';
@@ -13,53 +12,11 @@ import { isMarkdownFile } from '../util/file';
 import { MdLinkOpener } from '../util/openDocumentLink';
 import { WebviewResourceProvider } from '../util/resources';
 import { urlToUri } from '../util/url';
-import { MdDocumentRenderer } from './documentRenderer';
+import { ImageInfo, MdDocumentRenderer } from './documentRenderer';
 import { MarkdownPreviewConfigurationManager } from './previewConfig';
 import { scrollEditorToLine, StartingScrollFragment, StartingScrollLine, StartingScrollLocation } from './scrolling';
 import { getVisibleLine, LastScrollLocation, TopmostLineMonitor } from './topmostLineMonitor';
-
-const localize = nls.loadMessageBundle();
-
-interface WebviewMessage {
-	readonly source: string;
-}
-
-interface CacheImageSizesMessage extends WebviewMessage {
-	readonly type: 'cacheImageSizes';
-	readonly body: { id: string; width: number; height: number }[];
-}
-
-interface RevealLineMessage extends WebviewMessage {
-	readonly type: 'revealLine';
-	readonly body: {
-		readonly line: number;
-	};
-}
-
-interface DidClickMessage extends WebviewMessage {
-	readonly type: 'didClick';
-	readonly body: {
-		readonly line: number;
-	};
-}
-
-interface ClickLinkMessage extends WebviewMessage {
-	readonly type: 'openLink';
-	readonly body: {
-		readonly href: string;
-	};
-}
-
-interface ShowPreviewSecuritySelectorMessage extends WebviewMessage {
-	readonly type: 'showPreviewSecuritySelector';
-}
-
-interface PreviewStyleLoadErrorMessage extends WebviewMessage {
-	readonly type: 'previewStyleLoadError';
-	readonly body: {
-		readonly unloadedStyles: string[];
-	};
-}
+import type { FromWebviewMessage, ToWebviewMessage } from '../../types/previewMessaging';
 
 export class PreviewDocumentVersion {
 
@@ -80,9 +37,8 @@ export class PreviewDocumentVersion {
 interface MarkdownPreviewDelegate {
 	getTitle?(resource: vscode.Uri): string;
 	getAdditionalState(): {};
-	openPreviewLinkToMarkdownFile(markdownLink: vscode.Uri, fragment: string): void;
+	openPreviewLinkToMarkdownFile(markdownLink: vscode.Uri, fragment: string | undefined): void;
 }
-
 
 class MarkdownPreview extends Disposable implements WebviewResourceProvider {
 
@@ -102,7 +58,7 @@ class MarkdownPreview extends Disposable implements WebviewResourceProvider {
 	private _currentVersion?: PreviewDocumentVersion;
 	private _isScrolling = false;
 
-	private _imageInfo: { readonly id: string; readonly width: number; readonly height: number }[] = [];
+	private _imageInfo: readonly ImageInfo[] = [];
 	private readonly _fileWatchersBySrc = new Map</* src: */ string, vscode.FileSystemWatcher>();
 
 	private readonly _onScrollEmitter = this._register(new vscode.EventEmitter<LastScrollLocation>());
@@ -139,7 +95,7 @@ class MarkdownPreview extends Disposable implements WebviewResourceProvider {
 		}
 
 		this._register(_contributionProvider.onContributionsChanged(() => {
-			setTimeout(() => this.refresh(), 0);
+			setTimeout(() => this.refresh(true), 0);
 		}));
 
 		this._register(vscode.workspace.onDidChangeTextDocument(event => {
@@ -164,26 +120,26 @@ class MarkdownPreview extends Disposable implements WebviewResourceProvider {
 			}
 		}));
 
-		this._register(this._webviewPanel.webview.onDidReceiveMessage((e: CacheImageSizesMessage | RevealLineMessage | DidClickMessage | ClickLinkMessage | ShowPreviewSecuritySelectorMessage | PreviewStyleLoadErrorMessage) => {
+		this._register(this._webviewPanel.webview.onDidReceiveMessage((e: FromWebviewMessage.Type) => {
 			if (e.source !== this._resource.toString()) {
 				return;
 			}
 
 			switch (e.type) {
 				case 'cacheImageSizes':
-					this._imageInfo = e.body;
+					this._imageInfo = e.imageData;
 					break;
 
 				case 'revealLine':
-					this._onDidScrollPreview(e.body.line);
+					this._onDidScrollPreview(e.line);
 					break;
 
 				case 'didClick':
-					this._onDidClickPreview(e.body.line);
+					this._onDidClickPreview(e.line);
 					break;
 
 				case 'openLink':
-					this._onDidClickPreviewLink(e.body.href);
+					this._onDidClickPreviewLink(e.href);
 					break;
 
 				case 'showPreviewSecuritySelector':
@@ -192,9 +148,7 @@ class MarkdownPreview extends Disposable implements WebviewResourceProvider {
 
 				case 'previewStyleLoadError':
 					vscode.window.showWarningMessage(
-						localize('onPreviewStyleLoadError',
-							"Could not load 'markdown.styles': {0}",
-							e.body.unloadedStyles.join(', ')));
+						vscode.l10n.t("Could not load 'markdown.styles': {0}", e.unloadedStyles.join(', ')));
 					break;
 			}
 		}));
@@ -224,7 +178,6 @@ class MarkdownPreview extends Disposable implements WebviewResourceProvider {
 		return {
 			resource: this._resource.toString(),
 			line: this._line,
-			imageInfo: this._imageInfo,
 			fragment: this._scrollToFragment,
 			...this._delegate.getAdditionalState(),
 		};
@@ -252,7 +205,7 @@ class MarkdownPreview extends Disposable implements WebviewResourceProvider {
 		return this._resource.fsPath === resource.fsPath;
 	}
 
-	public postMessage(msg: any) {
+	public postMessage(msg: ToWebviewMessage.Type) {
 		if (!this._disposed) {
 			this._webviewPanel.webview.postMessage(msg);
 		}
@@ -319,7 +272,7 @@ class MarkdownPreview extends Disposable implements WebviewResourceProvider {
 		}
 
 		const content = await (shouldReloadPage
-			? this._contentProvider.renderDocument(document, this, this._previewConfigurations, this._line, selectedLine, this.state, this._disposeCts.token)
+			? this._contentProvider.renderDocument(document, this, this._previewConfigurations, this._line, selectedLine, this.state, this._imageInfo, this._disposeCts.token)
 			: this._contentProvider.renderBody(document, this));
 
 		// Another call to `doUpdate` may have happened.
@@ -372,7 +325,7 @@ class MarkdownPreview extends Disposable implements WebviewResourceProvider {
 			.then((editor) => {
 				revealLineInEditor(editor);
 			}, () => {
-				vscode.window.showErrorMessage(localize('preview.clickOpenFailed', 'Could not open {0}', this._resource.toString()));
+				vscode.window.showErrorMessage(vscode.l10n.t('Could not open {0}', this._resource.toString()));
 			});
 	}
 
@@ -393,7 +346,7 @@ class MarkdownPreview extends Disposable implements WebviewResourceProvider {
 		if (reloadPage) {
 			this._webviewPanel.webview.html = html;
 		} else {
-			this._webviewPanel.webview.postMessage({
+			this.postMessage({
 				type: 'updateContent',
 				content: html,
 				source: this._resource.toString(),
@@ -457,7 +410,7 @@ class MarkdownPreview extends Disposable implements WebviewResourceProvider {
 				try {
 					const doc = await vscode.workspace.openTextDocument(vscode.Uri.from(resolved.uri));
 					if (isMarkdownFile(doc)) {
-						return this._delegate.openPreviewLinkToMarkdownFile(doc.uri, resolved.fragment ?? '');
+						return this._delegate.openPreviewLinkToMarkdownFile(doc.uri, resolved.fragment ? decodeURIComponent(resolved.fragment) : undefined);
 					}
 				} catch {
 					// Noop
@@ -489,8 +442,8 @@ export interface IManagedMarkdownPreview {
 	readonly onDispose: vscode.Event<void>;
 	readonly onDidChangeViewState: vscode.Event<vscode.WebviewPanelOnDidChangeViewStateEvent>;
 
+	copyImage(id: string): void;
 	dispose(): void;
-
 	refresh(): void;
 	updateConfiguration(): void;
 
@@ -560,6 +513,15 @@ export class StaticMarkdownPreview extends Disposable implements IManagedMarkdow
 				this._preview.scrollTo(event.line);
 			}
 		}));
+	}
+
+	copyImage(id: string) {
+		this._webviewPanel.reveal();
+		this._preview.postMessage({
+			type: 'copyImage',
+			source: this.resource.toString(),
+			id: id
+		});
 	}
 
 	private readonly _onDispose = this._register(new vscode.EventEmitter<void>());
@@ -708,6 +670,15 @@ export class DynamicMarkdownPreview extends Disposable implements IManagedMarkdo
 		}));
 	}
 
+	copyImage(id: string) {
+		this._webviewPanel.reveal();
+		this._preview.postMessage({
+			type: 'copyImage',
+			source: this.resource.toString(),
+			id: id
+		});
+	}
+
 	private readonly _onDisposeEmitter = this._register(new vscode.EventEmitter<void>());
 	public readonly onDispose = this._onDisposeEmitter.event;
 
@@ -773,8 +744,8 @@ export class DynamicMarkdownPreview extends Disposable implements IManagedMarkdo
 	private static _getPreviewTitle(resource: vscode.Uri, locked: boolean): string {
 		const resourceLabel = uri.Utils.basename(resource);
 		return locked
-			? localize('lockedPreviewTitle', '[Preview] {0}', resourceLabel)
-			: localize('previewTitle', 'Preview {0}', resourceLabel);
+			? vscode.l10n.t('[Preview] {0}', resourceLabel)
+			: vscode.l10n.t('Preview {0}', resourceLabel);
 	}
 
 	public get position(): vscode.ViewColumn | undefined {

@@ -14,12 +14,12 @@ import { IThemeService } from 'vs/platform/theme/common/themeService';
 import { ICommentService } from 'vs/workbench/contrib/comments/browser/commentService';
 import { CommentThreadWidget } from 'vs/workbench/contrib/comments/browser/commentThreadWidget';
 import { ICellViewModel, INotebookEditorDelegate } from 'vs/workbench/contrib/notebook/browser/notebookBrowser';
-import { CellPart } from 'vs/workbench/contrib/notebook/browser/view/cellPart';
+import { CellContentPart } from 'vs/workbench/contrib/notebook/browser/view/cellPart';
 import { CodeCellViewModel } from 'vs/workbench/contrib/notebook/browser/viewModel/codeCellViewModel';
 import { CellKind } from 'vs/workbench/contrib/notebook/common/notebookCommon';
 import { ICellRange } from 'vs/workbench/contrib/notebook/common/notebookRange';
 
-export class CellComments extends CellPart {
+export class CellComments extends CellContentPart {
 	private _initialized: boolean = false;
 	private _commentThreadWidget: CommentThreadWidget<ICellRange> | null = null;
 	private currentElement: CodeCellViewModel | undefined;
@@ -53,22 +53,24 @@ export class CellComments extends CellPart {
 		const info = await this._getCommentThreadForCell(element);
 
 		if (info) {
-			this._createCommentTheadWidget(info.owner, info.thread);
+			await this._createCommentTheadWidget(info.owner, info.thread);
 		}
 	}
 
-	private _createCommentTheadWidget(owner: string, commentThread: languages.CommentThread<ICellRange>) {
+	private async _createCommentTheadWidget(owner: string, commentThread: languages.CommentThread<ICellRange>) {
 		this._commentThreadWidget?.dispose();
 		this.commentTheadDisposables.clear();
 		this._commentThreadWidget = this.instantiationService.createInstance(
 			CommentThreadWidget,
 			this.container,
+			this.notebookEditor,
 			owner,
 			this.notebookEditor.textModel!.uri,
 			this.contextKeyService,
 			this.instantiationService,
 			commentThread,
-			null,
+			undefined,
+			undefined,
 			{
 				codeBlockFontFamily: this.configurationService.getValue<IEditorOptions>('editor').fontFamily || EDITOR_FONT_DEFAULTS.fontFamily
 			},
@@ -82,7 +84,7 @@ export class CellComments extends CellPart {
 
 		const layoutInfo = this.notebookEditor.getLayoutInfo();
 
-		this._commentThreadWidget.display(layoutInfo.fontInfo.lineHeight);
+		await this._commentThreadWidget.display(layoutInfo.fontInfo.lineHeight, true);
 		this._applyTheme();
 
 		this.commentTheadDisposables.add(this._commentThreadWidget.onDidResize(() => {
@@ -97,7 +99,7 @@ export class CellComments extends CellPart {
 			if (this.currentElement) {
 				const info = await this._getCommentThreadForCell(this.currentElement);
 				if (!this._commentThreadWidget && info) {
-					this._createCommentTheadWidget(info.owner, info.thread);
+					await this._createCommentTheadWidget(info.owner, info.thread);
 					const layoutInfo = (this.currentElement as CodeCellViewModel).layoutInfo;
 					this.container.style.top = `${layoutInfo.outputContainerOffset + layoutInfo.outputTotalHeight}px`;
 					this.currentElement.commentHeight = this._calculateCommentThreadHeight(this._commentThreadWidget!.getDimensions().height);
@@ -115,7 +117,7 @@ export class CellComments extends CellPart {
 						return;
 					}
 
-					this._commentThreadWidget.updateCommentThread(info.thread);
+					await this._commentThreadWidget.updateCommentThread(info.thread);
 					this.currentElement.commentHeight = this._calculateCommentThreadHeight(this._commentThreadWidget.getDimensions().height);
 				}
 			}
@@ -139,7 +141,7 @@ export class CellComments extends CellPart {
 		if (this.notebookEditor.hasModel()) {
 			const commentInfos = coalesce(await this.commentService.getNotebookComments(element.uri));
 			if (commentInfos.length && commentInfos[0].threads.length) {
-				return { owner: commentInfos[0].owner, thread: commentInfos[0].threads[0] };
+				return { owner: commentInfos[0].uniqueOwner, thread: commentInfos[0].threads[0] };
 			}
 		}
 
@@ -152,7 +154,7 @@ export class CellComments extends CellPart {
 		this._commentThreadWidget?.applyTheme(theme, fontInfo);
 	}
 
-	protected override didRenderCell(element: ICellViewModel): void {
+	override didRenderCell(element: ICellViewModel): void {
 		if (element.cellKind === CellKind.Code) {
 			this.currentElement = element as CodeCellViewModel;
 			this.initialize(element);
